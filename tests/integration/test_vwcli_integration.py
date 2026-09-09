@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -32,6 +33,9 @@ def _parse_created_id(output: str) -> str:
 
 def _search_json(client: Client, capsys: pytest.CaptureFixture[str], query: str) -> list[dict]:
     capsys.readouterr()  # discard any previous stdout/stderr in this test
+    # Tests drive reads immediately after writes; give bw serve a moment to
+    # settle its in-memory search index before asserting on the result.
+    time.sleep(0.3)
     rc = _run(client, "search", "--json", query)
     captured = capsys.readouterr()
     assert rc == 0, f"search failed for {query}: {captured.err}"
@@ -406,6 +410,9 @@ def test_vwcli_ansible_vault_update(integration_env, vaultwarden_server, capsys:
         "initial-password",
     )
     assert rc == 0
+
+    # Let the bw serve index settle before the search-driven update.
+    time.sleep(0.3)
 
     rc = _run(Client(), "update", "--search", unique, "--password", new_password, "--to-ansible-vault")
     captured = capsys.readouterr()
