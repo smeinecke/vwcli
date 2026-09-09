@@ -361,6 +361,13 @@ class Client:
             except (urllib.error.URLError, TimeoutError) as exc:
                 raise VwcliError(str(exc))
 
+    def bw_serve_sync(self) -> None:
+        """Ask the running bw serve process to sync its vault data from the server."""
+        if not self.bw_serve_url:
+            return
+        with contextlib.suppress(VwcliError):
+            self.bw_serve_request_json("POST", "/sync")
+
     def bw_serve_request_json(self, method: str, path: str, json_body: Any | None = None) -> dict[str, Any]:
         if not self.bw_serve_url:
             raise VwcliError("bw serve URL is not set")
@@ -1016,12 +1023,14 @@ class Client:
         if not item_id:
             raise VwcliError("Create succeeded but item ID was not returned")
 
+        self.bw_serve_sync()
         print(f"Created item: {created_json.get('name', '')} [{item_id}]")
         if ns.generate_password:
             print(f"Generated password: {password}")
 
         if ns.collection:
             self.assign_collection_to_item(str(item_id), ns.collection)
+            self.bw_serve_sync()
             print(f"Assigned collection: {ns.collection}")
 
     def _prepare_update_target(
@@ -1124,12 +1133,14 @@ class Client:
             return
 
         self.bw_edit_item(target_id, target_json)
+        self.bw_serve_sync()
         print(f"Updated item [{target_id}]")
         if ns.generate_password:
             print(f"Generated password: {password}")
 
         if ns.collection:
             self.assign_collection_to_item(target_id, ns.collection)
+            self.bw_serve_sync()
             print(f"Assigned collection: {ns.collection}")
 
         if ns.to_ansible_vault:
@@ -1566,6 +1577,7 @@ class Client:
                 print("Aborted.")
                 return
         self.bw_delete_item(item_id)
+        self.bw_serve_sync()
         print(f"Deleted item [{item_id}]")
 
     def cmd_move(self, ns: argparse.Namespace) -> None:
@@ -1625,6 +1637,7 @@ class Client:
 
         if errors:
             raise VwcliError(f"{errors} item(s) failed to move.")
+        self.bw_serve_sync()
         print(f"Done. Moved {len(items)} item(s) to '{ns.to_collection}'.")
 
     def cmd_cache_collections(self, _ns: argparse.Namespace) -> None:
