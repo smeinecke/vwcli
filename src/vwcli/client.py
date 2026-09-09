@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
-import atexit
 import copy
 import http.client
 import json
@@ -21,65 +19,21 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from rich.console import Console
-from rich.table import Table
-
-BW_SESSION_DEFAULT_TTL = int(
-    os.environ.get("BW_SESSION_TTL_SECONDS", "2505600")
-)  # 29 days (conservative vs 30-day refresh token)
-
-URI_MATCH_NAMES: dict[str, int | None] = {
-    "default": None,
-    "null": None,
-    "base_domain": 0,
-    "basedomain": 0,
-    "host": 1,
-    "starts_with": 2,
-    "startswith": 2,
-    "exact": 3,
-    "regexp": 4,
-    "regex": 4,
-    "never": 5,
-}
-
-
-def parse_uri(raw: str) -> tuple[str, int | None]:
-    """Parse 'URL::match_type' into (url, match_int_or_None). Separator '::' avoids clashing with URL colons."""
-    if "::" in raw:
-        url, _, match_name = raw.rpartition("::")
-        match_name = match_name.lower()
-        if match_name not in URI_MATCH_NAMES:
-            valid = ", ".join(sorted(URI_MATCH_NAMES))
-            raise ValueError(f"Unknown URI match type '{match_name}'. Valid: {valid}")
-        return url, URI_MATCH_NAMES[match_name]
-    return raw, None
-
-
-CACHE_DIR = Path.home() / ".cache" / "bw-cli"
-COLLECTION_CACHE = CACHE_DIR / "collections.json"
-CONFIG_DIR = Path.home() / ".config" / "pws"
-CONFIG_FILE = CONFIG_DIR / "config"
-BW_STALE_CIPHER_ERR = (
-    "The client copy of this cipher is out of date. Resync the client and try again."
+from .config import Config, safe_chmod
+from .constants import (
+    BW_SESSION_DEFAULT_TTL,
+    BW_SERVE_HOST,
+    BW_SERVE_PORT_BASE,
+    BW_SERVE_STARTUP_DELAY,
+    BW_SERVE_STARTUP_RETRIES,
+    BW_STALE_CIPHER_ERR,
+    URI_MATCH_NAMES,
+    UUID_RE,
+    _CLONE_STRIP_KEYS,
+    parse_uri,
 )
-BW_SERVE_HOST = os.environ.get("BW_SERVE_HOST", "127.0.0.1")
-BW_SERVE_PORT_BASE = int(os.environ.get("BW_SERVE_PORT_BASE", "18087"))
-BW_SERVE_STARTUP_RETRIES = int(os.environ.get("BW_SERVE_STARTUP_RETRIES", "40"))
-BW_SERVE_STARTUP_DELAY = float(os.environ.get("BW_SERVE_STARTUP_DELAY", "0.1"))
-UUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
-_CLONE_STRIP_KEYS = frozenset(
-    {
-        "id",
-        "object",
-        "revisionDate",
-        "creationDate",
-        "deletedDate",
-        "passwordHistory",
-        "attachments",
-    }
-)
+from .exceptions import VwcliError
+from .output import Console, Table
 
 
 class _UnixSocketHTTPConnection(http.client.HTTPConnection):
@@ -93,11 +47,7 @@ class _UnixSocketHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self._socket_path)
 
 
-class PwsError(Exception):
-    pass
-
-
-class Pws:
+class Client:
     def __init__(self) -> None:
         self.bw_serve_url = os.environ.get("BW_SERVE_URL", "")
         self.bw_serve_proc: subprocess.Popen[str] | None = None
@@ -106,86 +56,22 @@ class Pws:
         self.bw_bin_path = shutil.which("bw")
         self.bw_session = os.environ.get("BW_SESSION", "")
         self.bw_session_expires: int = 0  # Unix timestamp; 0 = unknown
-        self.load_config()
-
+        self.config = Config()
+        self.config.load(self)
     def need_bw(self) -> None:
         if self.bw_bin_path:
             return
         nvm_dir = Path(os.environ.get("NVM_DIR", str(Path.home() / ".nvm")))
         if not (nvm_dir / "nvm.sh").exists():
-            raise PwsError(
+            raise VwcliError(
                 f"Missing required command: bw (and NVM not found at {nvm_dir / 'nvm.sh'})"
             )
-
-    @staticmethod
-    def _safe_chmod(path: Path, mode: int) -> None:
-        try:
-            os.chmod(path, mode)
-        except OSError:
-            pass
-
-    @staticmethod
-    def _ensure_secure_dir(path: Path) -> None:
-        path.mkdir(parents=True, exist_ok=True)
-        Pws._safe_chmod(path, 0o700)
-
-    def ensure_config_dir(self) -> None:
-        self._ensure_secure_dir(CONFIG_DIR)
-        if not CONFIG_FILE.exists():
-            CONFIG_FILE.touch()
-            self._safe_chmod(CONFIG_FILE, 0o600)
-
-    def load_config(self) -> None:
-        self.ensure_config_dir()
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip()
-            if key == "BW_SESSION" and not self.bw_session and value:
-                self.bw_session = value
-                os.environ["BW_SESSION"] = value
-            elif key == "BW_SESSION_EXPIRES" and not self.bw_session_expires and value:
-                try:
-                    self.bw_session_expires = int(value)
-                except ValueError:
-                    pass
-            elif key == "BW_SERVE_URL" and not self.bw_serve_url and value:
-                self.bw_serve_url = value
-
-    def set_config_value(self, key: str, value: str) -> None:
-        self.ensure_config_dir()
-        lines = CONFIG_FILE.read_text(encoding="utf-8").splitlines()
-        out_lines: list[str] = []
-        replaced = False
-
-        for line in lines:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in line:
-                out_lines.append(line)
-                continue
-            file_key = line.split("=", 1)[0].strip()
-            if file_key == key:
-                out_lines.append(f"{key}={value}")
-                replaced = True
-            else:
-                out_lines.append(line)
-
-        if not replaced:
-            out_lines.append(f"{key}={value}")
-
-        CONFIG_FILE.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
-        self._safe_chmod(CONFIG_FILE, 0o600)
-
     def bw_list_organizations(self) -> list[dict[str, Any]]:
         if self.bw_serve_url:
             result = self._bw_serve_list("/list/object/organizations", "organizations")
             if result is not None:
                 return result
         return self._bw_run_json_list(["list", "organizations"])
-
     def bw_get_organization(self, org_id: str) -> dict[str, Any]:
         if self.bw_serve_url:
             try:
@@ -193,18 +79,17 @@ class Pws:
                 data = response.get("data")
                 if self.bw_serve_response_success(response) and isinstance(data, dict):
                     return data
-            except PwsError:
+            except VwcliError:
                 print(
                     "[warn] bw serve get organization endpoint failed, falling back to CLI.",
                     file=sys.stderr,
                 )
         return self._bw_run_json_dict(["get", "organization", org_id])
-
     def resolve_organization_by_name(self, name: str) -> dict[str, Any]:
         orgs = self.bw_list_organizations()
         matches = [o for o in orgs if str(o.get("name") or "") == name]
         if len(matches) == 0:
-            raise PwsError(f"No organization named '{name}'")
+            raise VwcliError(f"No organization named '{name}'")
         if len(matches) > 1:
             print(f"Ambiguous organization name '{name}'. Matches:", file=sys.stderr)
             for m in matches:
@@ -212,16 +97,14 @@ class Pws:
                     f"  - {m.get('name')} [id={m.get('id')}]",
                     file=sys.stderr,
                 )
-            raise PwsError("Organization name must be unique.")
+            raise VwcliError("Organization name must be unique.")
         return matches[0]
-
     def resolve_vault_to_org_id(self, vault_name: str) -> str:
         org = self.resolve_organization_by_name(vault_name)
         org_id = org.get("id")
         if not org_id:
-            raise PwsError(f"Organization '{vault_name}' has no id")
+            raise VwcliError(f"Organization '{vault_name}' has no id")
         return str(org_id)
-
     def _nvm_bw_cmd(self, args: list[str]) -> list[str]:
         nvm_dir = os.environ.get("NVM_DIR", str(Path.home() / ".nvm"))
         return [
@@ -231,7 +114,6 @@ class Pws:
             "_",
             *args,
         ]
-
     def _bw_cmd(
         self,
         args: list[str],
@@ -251,7 +133,6 @@ class Pws:
             capture_output=capture,
             check=False,
         )
-
     def bw_run(self, args: list[str], *, input_text: str | None = None) -> str:
         run = self._bw_cmd(args, input_text=input_text, capture=True)
         if run.returncode == 0:
@@ -271,42 +152,35 @@ class Pws:
 
         if err_msg:
             print(err_msg, end="" if err_msg.endswith("\n") else "\n", file=sys.stderr)
-        raise PwsError("")
-
+        raise VwcliError("")
     def bw_run_interactive(self, args: list[str]) -> int:
         return self._bw_cmd(args, capture=False).returncode
-
-    def ensure_cache_dir(self) -> None:
-        self._ensure_secure_dir(CACHE_DIR)
-
     def _bw_run_json_list(
         self, args: list[str], *, input_text: str | None = None
     ) -> list[dict[str, Any]]:
         data = json.loads(self.bw_run(args, input_text=input_text))
         if not isinstance(data, list):
-            raise PwsError(f"Unexpected bw {' '.join(args[:2])} output")
+            raise VwcliError(f"Unexpected bw {' '.join(args[:2])} output")
         return data
-
     def _bw_run_json_dict(
         self, args: list[str], *, input_text: str | None = None
     ) -> dict[str, Any]:
         data = json.loads(self.bw_run(args, input_text=input_text))
         if not isinstance(data, dict):
-            raise PwsError(f"Unexpected bw {' '.join(args[:2])} output")
+            raise VwcliError(f"Unexpected bw {' '.join(args[:2])} output")
         return data
-
     def ensure_session(self) -> None:
         # Migrate session token from old bash cache file if present
-        session_cache = CACHE_DIR / "session"
+        session_cache = self.config.cache_dir / "session"
         if not self.bw_session and session_cache.exists():
             migrated = session_cache.read_text(encoding="utf-8").strip()
             if migrated:
                 self.bw_session = migrated
                 os.environ["BW_SESSION"] = migrated
-                self.set_config_value("BW_SESSION", migrated)
+                self.config.set("BW_SESSION", migrated)
 
         if not self.bw_session:
-            raise PwsError(f"BW_SESSION is not set. Run: {sys.argv[0]} login")
+            raise VwcliError(f"BW_SESSION is not set. Run: {sys.argv[0]} login")
 
         if self._session_is_expired():
             print(
@@ -314,33 +188,29 @@ class Pws:
                 file=sys.stderr,
             )
             if not self._try_auto_renew():
-                raise PwsError(
+                raise VwcliError(
                     f"BW_SESSION expired and silent re-unlock failed. Run: {sys.argv[0]} login"
                 )
             print("[info] Session renewed successfully.", file=sys.stderr)
 
         os.environ["BW_SESSION"] = self.bw_session
-
     def _service_socket_url(self) -> str:
         sock = os.environ.get(
             "BW_SERVE_SOCKET", f"/run/user/{os.getuid()}/bw.sock"
         )
         return f"unix://{sock}"
-
     def _service_is_active(self) -> bool:
         result = subprocess.run(
             ["systemctl", "--user", "is-active", "bitwarden-cli.service"],
             capture_output=True,
         )
         return result.returncode == 0
-
     def _service_start(self) -> bool:
         result = subprocess.run(
             ["systemctl", "--user", "start", "bitwarden-cli.service"],
             capture_output=True,
         )
         return result.returncode == 0
-
     def _wait_for_bw_serve(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -348,7 +218,6 @@ class Pws:
                 return True
             time.sleep(0.1)
         return False
-
     def _maybe_use_systemd_service(self) -> bool:
         if not self._service_is_installed():
             return False
@@ -377,7 +246,6 @@ class Pws:
         )
         self.bw_serve_url = ""
         return False
-
     def start_bw_serve(self) -> None:
         if self.bw_serve_url:
             if self._bw_serve_ping("/status"):
@@ -419,13 +287,11 @@ class Pws:
             time.sleep(BW_SERVE_STARTUP_DELAY)
 
         self.stop_bw_serve()
-        raise PwsError("Failed to start bw serve")
-
+        raise VwcliError("Failed to start bw serve")
     def _bw_serve_command(self, host: str, port: str) -> list[str]:
         if self.bw_bin_path:
             return [self.bw_bin_path, "serve", "--hostname", host, "--port", port]
         return self._nvm_bw_cmd(["serve", "--hostname", host, "--port", port])
-
     def stop_bw_serve(self) -> None:
         if not self.bw_serve_managed:
             return
@@ -447,17 +313,13 @@ class Pws:
         self.bw_serve_proc = None
         self.bw_serve_log_path = ""
         self.bw_serve_managed = False
-
-    @staticmethod
     def _find_free_port() -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind((BW_SERVE_HOST, 0))
             return s.getsockname()[1]
-
     def _unix_socket_path(self) -> str | None:
         parsed = urllib.parse.urlparse(self.bw_serve_url)
         return parsed.path if parsed.scheme == "unix" else None
-
     def _bw_serve_ping(self, path: str) -> bool:
         if not self.bw_serve_url:
             return False
@@ -466,7 +328,6 @@ class Pws:
             return raw is not None
         except Exception:
             return False
-
     def _bw_serve_raw_request(
         self,
         method: str,
@@ -484,7 +345,7 @@ class Pws:
                 resp = conn.getresponse()
                 return resp.read().decode("utf-8")
             except (OSError, http.client.HTTPException) as exc:
-                raise PwsError(str(exc))
+                raise VwcliError(str(exc))
             finally:
                 conn.close()
         else:
@@ -496,15 +357,14 @@ class Pws:
                     return resp.read().decode("utf-8")
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
-                raise PwsError(f"HTTP {exc.code}: {body}")
+                raise VwcliError(f"HTTP {exc.code}: {body}")
             except (urllib.error.URLError, TimeoutError) as exc:
-                raise PwsError(str(exc))
-
+                raise VwcliError(str(exc))
     def bw_serve_request_json(
         self, method: str, path: str, json_body: Any | None = None
     ) -> dict[str, Any]:
         if not self.bw_serve_url:
-            raise PwsError("bw serve URL is not set")
+            raise VwcliError("bw serve URL is not set")
 
         body = None
         headers: dict[str, str] = {}
@@ -517,12 +377,9 @@ class Pws:
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise PwsError(f"Invalid JSON from bw serve: {exc} (raw: {raw[:200]!r})")
-
-    @staticmethod
+            raise VwcliError(f"Invalid JSON from bw serve: {exc} (raw: {raw[:200]!r})")
     def bw_serve_response_success(response: dict[str, Any]) -> bool:
         return response.get("success") is True
-
     def bw_serve_try_json(
         self,
         warn_label: str,
@@ -532,13 +389,13 @@ class Pws:
         has_cli_fallback: bool = True,
     ) -> Any:
         if not self.bw_serve_url:
-            raise PwsError("bw serve URL is not set")
+            raise VwcliError("bw serve URL is not set")
 
         errors: list[str] = []
         for method, path in specs:
             try:
                 response = self.bw_serve_request_json(method, path, json_body)
-            except PwsError as exc:
+            except VwcliError as exc:
                 errors.append(f"{method} {path}: {exc}")
                 continue
             if self.bw_serve_response_success(response):
@@ -556,12 +413,9 @@ class Pws:
             print(f"[warn] bw serve {warn_label} endpoint failed.", file=sys.stderr)
         for msg in errors:
             print(f"[debug] {msg}", file=sys.stderr)
-        raise PwsError("fallback")
-
-    @staticmethod
+        raise VwcliError("fallback")
     def _exclude_trash(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [item for item in items if not item.get("deletedDate")]
-
     def _verify_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Re-fetch each item individually to get authoritative data including trash status.
 
@@ -577,17 +431,16 @@ class Pws:
                 fresh = self.bw_get_item(str(item_id))
                 if not fresh.get("deletedDate"):
                     verified.append(fresh)
-            except PwsError:
+            except VwcliError:
                 pass  # inaccessible or trashed
         return verified
-
     def bw_list_items_search(
         self, search: str, *, verify: bool = True
     ) -> list[dict[str, Any]]:
         if UUID_RE.match(search):
             try:
                 return self._exclude_trash([self.bw_get_item(search)])
-            except PwsError:
+            except VwcliError:
                 return []
 
         if self.bw_serve_url:
@@ -603,7 +456,7 @@ class Pws:
                         if verify
                         else self._exclude_trash(data)
                     )
-            except PwsError:
+            except VwcliError:
                 pass
             print(
                 "[warn] bw serve search endpoint failed, falling back to CLI.",
@@ -613,14 +466,11 @@ class Pws:
         return self._exclude_trash(
             self._bw_run_json_list(["list", "items", "--search", search])
         )
-
-    @staticmethod
     def _bw_serve_empty_list(response: dict[str, Any]) -> bool:
         return (
             not response.get("success")
             and "not found" in (response.get("message") or "").lower()
         )
-
     def _bw_serve_list(self, path: str, warn_label: str) -> list[dict[str, Any]] | None:
         """Fetch a list via bw serve. Returns the list, [] for not-found, or None on failure."""
         try:
@@ -630,21 +480,19 @@ class Pws:
                 return data if isinstance(data, list) else []
             if self._bw_serve_empty_list(response):
                 return []
-        except PwsError:
+        except VwcliError:
             pass
         print(
             f"[warn] bw serve {warn_label} endpoint failed, falling back to CLI.",
             file=sys.stderr,
         )
         return None
-
     def bw_list_collections(self) -> list[dict[str, Any]]:
         if self.bw_serve_url:
             result = self._bw_serve_list("/list/object/collections", "collections")
             if result is not None:
                 return result
         return self._bw_run_json_list(["list", "collections"])
-
     def bw_list_items_by_collection(self, collection_id: str) -> list[dict[str, Any]]:
         if self.bw_serve_url:
             encoded = urllib.parse.quote(collection_id, safe="")
@@ -657,7 +505,6 @@ class Pws:
         return self._exclude_trash(
             self._bw_run_json_list(["list", "items", "--collectionid", collection_id])
         )
-
     def bw_list_folders(self) -> list[dict[str, Any]]:
         if self.bw_serve_url:
             result = self._bw_serve_list("/list/object/folders", "folders")
@@ -665,7 +512,6 @@ class Pws:
                 return result
 
         return self._bw_run_json_list(["list", "folders"])
-
     def bw_get_item(self, item_id: str) -> dict[str, Any]:
         if self.bw_serve_url:
             try:
@@ -673,14 +519,13 @@ class Pws:
                 data = response.get("data")
                 if self.bw_serve_response_success(response) and isinstance(data, dict):
                     return data
-            except PwsError:
+            except VwcliError:
                 print(
                     "[warn] bw serve get item endpoint failed, falling back to CLI.",
                     file=sys.stderr,
                 )
 
         return self._bw_run_json_dict(["get", "item", item_id])
-
     def bw_get_template_item(self) -> dict[str, Any]:
         if self.bw_serve_url:
             try:
@@ -693,16 +538,14 @@ class Pws:
                         return data["template"]
                     if isinstance(data, dict):
                         return data
-            except PwsError:
+            except VwcliError:
                 pass
 
         return self._bw_run_json_dict(["get", "template", "item"])
-
     def bw_encode_json(self, payload: Any) -> str:
         return self.bw_run(
             ["encode"], input_text=json.dumps(payload, separators=(",", ":"))
         ).strip()
-
     def bw_create_item(self, item_json: dict[str, Any]) -> dict[str, Any]:
         if self.bw_serve_url:
             try:
@@ -711,13 +554,12 @@ class Pws:
                 )
                 if isinstance(data, dict):
                     return data
-            except PwsError:
+            except VwcliError:
                 pass
 
         return self._bw_run_json_dict(
             ["create", "item"], input_text=self.bw_encode_json(item_json)
         )
-
     def bw_edit_item(self, item_id: str, item_json: dict[str, Any]) -> None:
         if self.bw_serve_url:
             try:
@@ -730,13 +572,12 @@ class Pws:
                     ],
                 )
                 return
-            except PwsError:
+            except VwcliError:
                 pass
 
         self.bw_run(
             ["edit", "item", item_id], input_text=self.bw_encode_json(item_json)
         )
-
     def bw_move_item_to_org(
         self, item_id: str, org_id: str, collection_ids: list[str]
     ) -> None:
@@ -746,18 +587,16 @@ class Pws:
                     "move", collection_ids, [("POST", f"/move/{item_id}/{org_id}")]
                 )
                 return
-            except PwsError:
+            except VwcliError:
                 pass
 
         self.bw_run(
             ["move", item_id, org_id], input_text=self.bw_encode_json(collection_ids)
         )
-
     def bw_create_attachment(self, item_id: str, file_path: str) -> dict[str, Any]:
         return self._bw_run_json_dict(
             ["create", "attachment", "--file", file_path, "--itemid", item_id]
         )
-
     def bw_delete_item(self, item_id: str) -> None:
         if self.bw_serve_url:
             try:
@@ -766,13 +605,11 @@ class Pws:
                 )
                 if self.bw_serve_response_success(response):
                     return
-            except PwsError:
+            except VwcliError:
                 pass
         self.bw_run(["delete", "item", item_id])
-
     def bw_delete_attachment(self, item_id: str, attachment_id: str) -> None:
         self.bw_run(["delete", "attachment", attachment_id, "--itemid", item_id])
-
     def bw_set_item_collections(
         self, item_id: str, org_id: str, collection_ids: list[str]
     ) -> None:
@@ -789,17 +626,15 @@ class Pws:
                     ],
                 )
                 return
-            except PwsError:
+            except VwcliError:
                 pass
 
         self.bw_run(
             ["edit", "item-collections", item_id, "--organizationid", org_id],
             input_text=self.bw_encode_json(collection_ids),
         )
-
     def bw_get_collection(self, collection_id: str) -> dict[str, Any]:
         return self.bw_serve_request_json("GET", f"/object/collection/{collection_id}")
-
     def bw_create_collection(
         self, org_id: str, name: str, parent_id: str = ""
     ) -> dict[str, Any]:
@@ -819,8 +654,7 @@ class Pws:
         )
         if isinstance(data, dict):
             return data
-        raise PwsError("create-collection returned unexpected data")
-
+        raise VwcliError("create-collection returned unexpected data")
     def bw_update_collection(
         self, collection_id: str, org_id: str, name: str, parent_id: str = ""
     ) -> dict[str, Any]:
@@ -845,8 +679,7 @@ class Pws:
         )
         if isinstance(data, dict):
             return data
-        raise PwsError("update-collection returned unexpected data")
-
+        raise VwcliError("update-collection returned unexpected data")
     def bw_delete_collection(self, collection_id: str, org_id: str) -> None:
         self.bw_serve_try_json(
             "delete-collection",
@@ -859,28 +692,19 @@ class Pws:
             ],
             has_cli_fallback=False,
         )
-
-    # --- systemd service env file integration ---
-
-    @staticmethod
     def _service_env_file() -> Path:
         xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
         return Path(xdg) / "systemd" / "user" / "bitwarden-cli.env"
-
-    @staticmethod
     def _service_is_installed() -> bool:
         result = subprocess.run(
             ["systemctl", "--user", "cat", "bitwarden-cli.service"],
             capture_output=True,
         )
         return result.returncode == 0
-
-    @staticmethod
     def _service_restart() -> None:
         subprocess.run(
             ["systemctl", "--user", "restart", "bitwarden-cli.service"], check=False
         )
-
     def _update_service_env(self, session: str, expires: int) -> bool:
         """Update BW_SESSION (and BW_SESSION_EXPIRES) in the systemd env file.
 
@@ -909,9 +733,8 @@ class Pws:
             out.append(f"BW_SESSION_EXPIRES={expires}")
 
         env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
-        self._safe_chmod(env_path, 0o600)
+        safe_chmod(env_path, 0o600)
         return True
-
     def _apply_new_session(
         self, session: str, *, restart_service: bool = True, quiet: bool = False
     ) -> None:
@@ -921,10 +744,10 @@ class Pws:
         self.bw_session_expires = expires
         os.environ["BW_SESSION"] = session
 
-        self.set_config_value("BW_SESSION", session)
-        self.set_config_value("BW_SESSION_EXPIRES", str(expires))
+        self.config.set("BW_SESSION", session)
+        self.config.set("BW_SESSION_EXPIRES", str(expires))
         if not quiet:
-            print(f"BW_SESSION cached in: {CONFIG_FILE}")
+            print(f"BW_SESSION cached in: {self.config.config_file}")
 
         if self._service_is_installed():
             updated = self._update_service_env(session, expires)
@@ -932,12 +755,10 @@ class Pws:
                 self._service_restart()
                 if not quiet:
                     print("bitwarden-cli.service restarted with new token")
-
     def _session_is_expired(self) -> bool:
         if not self.bw_session_expires:
             return False  # no expiry info stored → assume still valid
         return time.time() >= self.bw_session_expires
-
     def _try_auto_renew(self) -> bool:
         """Silently re-unlock and propagate a fresh token. Returns True on success.
 
@@ -952,32 +773,28 @@ class Pws:
             return False
         self._apply_new_session(session, restart_service=True, quiet=True)
         return True
-
     def cmd_login(self, _ns: argparse.Namespace) -> None:
-        self.ensure_config_dir()
+        self.config.ensure_dir()
 
         if self._bw_cmd(["login", "--check"]).returncode != 0:
             print("[info] No active bw login, starting interactive login...")
             if self.bw_run_interactive(["login"]) != 0:
-                raise PwsError("bw login failed")
+                raise VwcliError("bw login failed")
 
         session = self.bw_run(["unlock", "--raw"]).strip()
         if not session:
-            raise PwsError("Failed to obtain BW_SESSION from bw unlock")
+            raise VwcliError("Failed to obtain BW_SESSION from bw unlock")
 
         self._apply_new_session(session, restart_service=True)
-
     def bw_sync(self) -> None:
         if self.bw_serve_url:
             try:
                 response = self.bw_serve_request_json("POST", "/sync")
                 if self.bw_serve_response_success(response):
                     return
-            except PwsError:
+            except VwcliError:
                 pass
         self.bw_run(["sync"])
-
-    @staticmethod
     def _compute_collection_full_paths(
         collections: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -1004,32 +821,30 @@ class Pws:
                 "parentId": parent_id or None,
             })
         return result
-
     def refresh_collections_cache(self) -> None:
         self.ensure_session()
-        self.ensure_cache_dir()
+        self.config.ensure_cache_dir()
         self.bw_sync()
 
         data = self.bw_list_collections()
         normalized = self._compute_collection_full_paths(data)
-        COLLECTION_CACHE.write_text(
+        self.config.collection_cache.write_text(
             json.dumps(normalized, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
         )
-        print(f"Collection cache written to: {COLLECTION_CACHE}")
-
+        print(f"Collection cache written to: {self.config.collection_cache}")
     def resolve_collection_by_name(self, col_name: str) -> dict[str, Any]:
-        if not COLLECTION_CACHE.exists():
-            raise PwsError(
+        if not self.config.collection_cache.exists():
+            raise VwcliError(
                 f"Collection cache not found. Run: {sys.argv[0]} collections cache"
             )
 
-        data = json.loads(COLLECTION_CACHE.read_text(encoding="utf-8"))
+        data = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
         if not isinstance(data, list):
-            raise PwsError("Collection cache is invalid")
+            raise VwcliError("Collection cache is invalid")
 
         matches = [item for item in data if item.get("name") == col_name]
         if len(matches) == 0:
-            raise PwsError(
+            raise VwcliError(
                 f"No collection named '{col_name}' in cache. Run '{sys.argv[0]} collections cache' or check spelling."
             )
         if len(matches) > 1:
@@ -1039,15 +854,14 @@ class Pws:
                     f"  - {m.get('name')} [id={m.get('id')}] org={m.get('organizationId')}",
                     file=sys.stderr,
                 )
-            raise PwsError("Collection name must be unique.")
+            raise VwcliError("Collection name must be unique.")
         return matches[0]
-
     def find_item_id_by_search(self, search: str) -> str:
         self.ensure_session()
         items = self.bw_list_items_search(search)
 
         if len(items) == 0:
-            raise PwsError(f"No items matched search '{search}'")
+            raise VwcliError(f"No items matched search '{search}'")
         if len(items) > 1:
             print(f"Search '{search}' matched multiple items:", file=sys.stderr)
             for item in items:
@@ -1055,17 +869,14 @@ class Pws:
                     f"  - {item.get('name', '')} [{item.get('id', '')}]",
                     file=sys.stderr,
                 )
-            raise PwsError("Please use --id or a more specific --search")
+            raise VwcliError("Please use --id or a more specific --search")
 
         item_id = items[0].get("id")
         if not item_id:
-            raise PwsError("Matched item has no id")
+            raise VwcliError("Matched item has no id")
         return str(item_id)
-
     def _resolve_item_id(self, ns: argparse.Namespace) -> str:
         return ns.id or self.find_item_id_by_search(ns.search)
-
-    @staticmethod
     def apply_item_updates(
         item_json: dict[str, Any],
         name: str,
@@ -1111,23 +922,18 @@ class Pws:
             login["uris"] = existing
 
         return out
-
-    @staticmethod
     def set_organization_id(
         item_json: dict[str, Any], organization_id: str
     ) -> dict[str, Any]:
         return {**item_json, "organizationId": organization_id}
-
-    @staticmethod
     def build_clone_payload(item_json: dict[str, Any]) -> dict[str, Any]:
         return {k: v for k, v in item_json.items() if k not in _CLONE_STRIP_KEYS}
-
     def assign_collection_to_item(self, item_id: str, collection_name: str) -> None:
         col_json = self.resolve_collection_by_name(collection_name)
         collection_id = col_json.get("id")
         org_id = col_json.get("organizationId")
         if not org_id:
-            raise PwsError(
+            raise VwcliError(
                 f"Collection '{collection_name}' has no organizationId; cannot assign."
             )
 
@@ -1140,17 +946,16 @@ class Pws:
             self.bw_move_item_to_org(item_id, str(org_id), collection_ids)
         else:
             if str(item_org) != str(org_id):
-                raise PwsError(
+                raise VwcliError(
                     f"Item belongs to organization {item_org} but collection belongs to {org_id}"
                 )
             print("[info] Updating item collection assignments...")
             self.bw_set_item_collections(item_id, str(org_id), collection_ids)
-
     def ansible_vault_encrypt(self, password: str, var_name: str = "password") -> None:
         if not password:
-            raise PwsError("No password to encrypt")
+            raise VwcliError("No password to encrypt")
         if not shutil.which("ansible-vault"):
-            raise PwsError("Missing required command: ansible-vault")
+            raise VwcliError("Missing required command: ansible-vault")
         stderr_messages: list[str] = []
         for subcommand in ("encrypt-string", "encrypt_string"):
             run = subprocess.run(
@@ -1165,12 +970,11 @@ class Pws:
                 return
             if run.stderr:
                 stderr_messages.append(run.stderr.strip())
-        raise PwsError(
+        raise VwcliError(
             stderr_messages[-1]
             if stderr_messages
             else "ansible-vault encrypt-string failed"
         )
-
     def bw_generate_password(self) -> str:
         gen_args = [
             "--length",
@@ -1191,14 +995,13 @@ class Pws:
                     pw = data.get("data") if isinstance(data, dict) else data
                     if isinstance(pw, str) and pw:
                         return pw
-            except PwsError:
+            except VwcliError:
                 print(
                     "[warn] bw serve generate endpoint failed, falling back to CLI.",
                     file=sys.stderr,
                 )
 
         return self.bw_run(["generate", *gen_args]).strip()
-
     def cmd_create(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         if ns.refresh_cache:
@@ -1230,7 +1033,7 @@ class Pws:
         created_json = self.bw_create_item(item_json)
         item_id = created_json.get("id")
         if not item_id:
-            raise PwsError("Create succeeded but item ID was not returned")
+            raise VwcliError("Create succeeded but item ID was not returned")
 
         print(f"Created item: {created_json.get('name', '')} [{item_id}]")
         if ns.generate_password:
@@ -1239,7 +1042,6 @@ class Pws:
         if ns.collection:
             self.assign_collection_to_item(str(item_id), ns.collection)
             print(f"Assigned collection: {ns.collection}")
-
     def cmd_update(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         if ns.refresh_cache:
@@ -1276,12 +1078,12 @@ class Pws:
                     col_json = self.resolve_collection_by_name(ns.collection)
                     col_id = col_json.get("id")
                     if not col_id:
-                        raise PwsError(
+                        raise VwcliError(
                             f"Collection '{ns.collection}' has no id; cannot assign."
                         )
                     col_org = str(col_json.get("organizationId") or "")
                     if col_org and vault_org_id and col_org != str(vault_org_id):
-                        raise PwsError(
+                        raise VwcliError(
                             f"Vault '{ns.vault}' (org {vault_org_id}) and "
                             f"collection '{ns.collection}' (org {col_org}) are "
                             "in different organizations"
@@ -1302,7 +1104,7 @@ class Pws:
                 created_clone = self.bw_create_item(clone_payload)
                 clone_id = created_clone.get("id")
                 if not clone_id:
-                    raise PwsError(
+                    raise VwcliError(
                         "Clone creation succeeded but clone ID was not returned"
                     )
                 target_id = str(clone_id)
@@ -1353,8 +1155,6 @@ class Pws:
         if ns.to_ansible_vault:
             final_password = str((target_json.get("login") or {}).get("password") or "")
             self.ansible_vault_encrypt(final_password)
-
-    @staticmethod
     def _item_group_label(
         item: dict[str, Any], folder_map: dict[str, str], col_map: dict[str, str]
     ) -> str:
@@ -1364,7 +1164,6 @@ class Pws:
         col_ids = item.get("collectionIds") or []
         names = sorted(n for cid in col_ids if (n := col_map.get(cid or "", "")))
         return ", ".join(names) if names else "No Folder"
-
     def cmd_search(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
 
@@ -1376,7 +1175,7 @@ class Pws:
                 for o in orgs
                 if o.get("id")
             }
-        except PwsError:
+        except VwcliError:
             print(
                 "[warn] Could not list organizations; vault column will show 'Unknown'.",
                 file=sys.stderr,
@@ -1389,7 +1188,7 @@ class Pws:
             return "Personal"
 
         if not ns.query and not ns.uri_filter:
-            raise PwsError("Provide a QUERY and/or --uri to search")
+            raise VwcliError("Provide a QUERY and/or --uri to search")
 
         search = " ".join(ns.query)
         # Fetch without individual-item verification so we can limit first
@@ -1409,21 +1208,21 @@ class Pws:
         if ns.to_ansible_vault:
             first_item = self._verify_items(items[:1])
             if not first_item:
-                raise PwsError(f"No items matched search '{search}'")
+                raise VwcliError(f"No items matched search '{search}'")
             login = first_item[0].get("login") or {}
             self.ansible_vault_encrypt(str(login.get("password") or ""))
             return
 
         folders = self.bw_list_folders()
         collections: list[dict[str, Any]] = []
-        if COLLECTION_CACHE.exists():
+        if self.config.collection_cache.exists():
             try:
-                cached = json.loads(COLLECTION_CACHE.read_text(encoding="utf-8"))
+                cached = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
                 if isinstance(cached, list):
                     collections = cached
             except json.JSONDecodeError:
                 print(
-                    f"[warn] Invalid collection cache at {COLLECTION_CACHE}, ignoring cache values.",
+                    f"[warn] Invalid collection cache at {self.config.collection_cache}, ignoring cache values.",
                     file=sys.stderr,
                 )
 
@@ -1439,7 +1238,7 @@ class Pws:
         }
         if item_col_ids and not all(cid in col_map for cid in item_col_ids):
             self.refresh_collections_cache()
-            collections = json.loads(COLLECTION_CACHE.read_text(encoding="utf-8"))
+            collections = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
             if not isinstance(collections, list):
                 collections = []
             col_map = {
@@ -1500,7 +1299,6 @@ class Pws:
                         ]
                     )
                 )
-
     def with_bw_serve(
         self, func: Callable[[argparse.Namespace], None], ns: argparse.Namespace
     ) -> None:
@@ -1509,13 +1307,12 @@ class Pws:
             func(ns)
         finally:
             self.stop_bw_serve()
-
     def cmd_attachment(self, ns: argparse.Namespace) -> None:
         sub = getattr(ns, "attachment_command", None)
         if sub in ("list", None):
             if not ns.id and not ns.search:
                 print(
-                    "Usage: pws attachment [list] (--id VALUE | --search VALUE) [--json]",
+                    "Usage: vwcli attachment [list] (--id VALUE | --search VALUE) [--json]",
                     file=sys.stderr,
                 )
                 return
@@ -1524,7 +1321,6 @@ class Pws:
             self.cmd_attachment_add(ns)
         elif sub == "delete":
             self.cmd_attachment_delete(ns)
-
     def cmd_attachment_show(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         item_id = self._resolve_item_id(ns)
@@ -1555,26 +1351,23 @@ class Pws:
                 print(
                     f"{att.get('id', '')}\t{att.get('fileName', '')}\t{att.get('size', '')}"
                 )
-
     def cmd_attachment_add(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         item_id = self._resolve_item_id(ns)
         file_path = ns.file
         if not Path(file_path).exists():
-            raise PwsError(f"File not found: {file_path}")
+            raise VwcliError(f"File not found: {file_path}")
         result = self.bw_create_attachment(item_id, file_path)
         att_list = result.get("attachments") or []
         added = att_list[-1] if att_list else {}
         print(
             f"Attachment added to item [{item_id}]: {added.get('fileName', file_path)} [{added.get('id', '')}]"
         )
-
     def cmd_attachment_delete(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         item_id = self._resolve_item_id(ns)
         self.bw_delete_attachment(item_id, ns.attachment_id)
         print(f"Attachment [{ns.attachment_id}] deleted from item [{item_id}]")
-
     def cmd_collections(self, ns: argparse.Namespace) -> None:
         sub = getattr(ns, "collections_command", "")
         if sub == "cache":
@@ -1593,10 +1386,9 @@ class Pws:
             self.cmd_collections_search(ns)
         else:
             print(
-                "Usage: pws collections {cache|list|add|update|delete|move|search}",
+                "Usage: vwcli collections {cache|list|add|update|delete|move|search}",
                 file=sys.stderr,
             )
-
     def cmd_collections_list(self, ns: argparse.Namespace) -> None:
         if ns.refresh_cache:
             self.refresh_collections_cache()
@@ -1627,20 +1419,19 @@ class Pws:
                         ]
                     )
                 )
-
     def cmd_collections_search(self, ns: argparse.Namespace) -> None:
         if not ns.query:
-            raise PwsError("QUERY is required")
+            raise VwcliError("QUERY is required")
         query = " ".join(ns.query).lower()
 
-        if not COLLECTION_CACHE.exists():
-            raise PwsError(
+        if not self.config.collection_cache.exists():
+            raise VwcliError(
                 f"Collection cache not found. Run: {sys.argv[0]} collections cache"
             )
 
-        data = json.loads(COLLECTION_CACHE.read_text(encoding="utf-8"))
+        data = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
         if not isinstance(data, list):
-            raise PwsError("Collection cache is invalid")
+            raise VwcliError("Collection cache is invalid")
 
         matches = [
             item for item in data
@@ -1673,12 +1464,11 @@ class Pws:
                         str(item.get("organizationId") or ""),
                     ])
                 )
-
     def _get_collection_full_path(self, collection_id: str) -> str:
         """Return the full path of a collection from cache or API."""
-        if COLLECTION_CACHE.exists():
+        if self.config.collection_cache.exists():
             try:
-                cached = json.loads(COLLECTION_CACHE.read_text(encoding="utf-8"))
+                cached = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
                 if isinstance(cached, list):
                     for item in cached:
                         if str(item.get("id") or "") == collection_id:
@@ -1691,22 +1481,21 @@ class Pws:
             for item in normalized:
                 if str(item.get("id") or "") == collection_id:
                     return str(item.get("name") or "")
-        except PwsError:
+        except VwcliError:
             pass
         try:
             resp = self.bw_get_collection(collection_id)
             data = resp.get("data", {}) if isinstance(resp, dict) else {}
             return str(data.get("name") or "")
-        except PwsError:
+        except VwcliError:
             return ""
-
     def cmd_collections_add(self, ns: argparse.Namespace) -> None:
         name = ns.name
         org_id = ns.organization_id
         parent_id = ns.parent_id or ""
 
         if not name:
-            raise PwsError("--name is required")
+            raise VwcliError("--name is required")
 
         if parent_id:
             parent_resp = self.bw_get_collection(parent_id)
@@ -1720,7 +1509,7 @@ class Pws:
             )
             if not org_id:
                 if not parent_org:
-                    raise PwsError(
+                    raise VwcliError(
                         f"Parent collection {parent_id} has no organizationId"
                     )
                 org_id = parent_org
@@ -1730,7 +1519,7 @@ class Pws:
                 if parent_path:
                     name = f"{parent_path}/{name}"
         elif not org_id:
-            raise PwsError(
+            raise VwcliError(
                 "--organization-id is required when no --parent-id is given"
             )
 
@@ -1738,9 +1527,9 @@ class Pws:
         col_id = result.get("id") if isinstance(result, dict) else None
         print(f"Created collection '{name}' [{col_id}]")
 
-        if COLLECTION_CACHE.exists() and col_id:
+        if self.config.collection_cache.exists() and col_id:
             try:
-                cached = json.loads(COLLECTION_CACHE.read_text(encoding="utf-8"))
+                cached = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
                 if isinstance(cached, list):
                     cached.append({
                         "id": str(col_id),
@@ -1748,34 +1537,32 @@ class Pws:
                         "organizationId": org_id,
                         "parentId": parent_id or None,
                     })
-                    COLLECTION_CACHE.write_text(
+                    self.config.collection_cache.write_text(
                         json.dumps(cached, ensure_ascii=True, indent=2) + "\n",
                         encoding="utf-8",
                     )
             except (json.JSONDecodeError, OSError):
                 pass
-
     def cmd_collections_update(self, ns: argparse.Namespace) -> None:
         if not ns.id or not ns.name:
-            raise PwsError("--id and --name are required")
+            raise VwcliError("--id and --name are required")
         current = self.bw_get_collection(ns.id)
         data = current.get("data", {}) if isinstance(current, dict) else {}
         org_id = str(data.get("organizationId") or "") if isinstance(data, dict) else ""
         if not org_id:
-            raise PwsError(f"Collection {ns.id} has no organizationId")
+            raise VwcliError(f"Collection {ns.id} has no organizationId")
         result = self.bw_update_collection(ns.id, org_id, ns.name, ns.parent_id or "")
         col_id = result.get("id") if isinstance(result, dict) else ns.id
         print(f"Updated collection [{col_id}] name='{ns.name}'")
 
-        if COLLECTION_CACHE.exists():
+        if self.config.collection_cache.exists():
             try:
                 self.refresh_collections_cache()
-            except PwsError:
+            except VwcliError:
                 pass
-
     def cmd_collections_delete(self, ns: argparse.Namespace) -> None:
         if not ns.id:
-            raise PwsError("--id is required")
+            raise VwcliError("--id is required")
         if not ns.yes:
             current = self.bw_get_collection(ns.id)
             data = current.get("data", {}) if isinstance(current, dict) else {}
@@ -1786,24 +1573,23 @@ class Pws:
                 return
         self.bw_delete_collection(ns.id, ns.organization_id or "")
         print(f"Deleted collection [{ns.id}]")
-
     def cmd_collections_move(self, ns: argparse.Namespace) -> None:
         if not ns.id or not ns.to_parent_id:
-            raise PwsError("--id and --to-parent-id are required")
+            raise VwcliError("--id and --to-parent-id are required")
         current = self.bw_get_collection(ns.id)
         data = current.get("data", {}) if isinstance(current, dict) else {}
         if not isinstance(data, dict):
-            raise PwsError(f"Failed to fetch collection {ns.id}")
+            raise VwcliError(f"Failed to fetch collection {ns.id}")
         org_id = str(data.get("organizationId") or "")
         name = str(data.get("name") or "")
         if not org_id:
-            raise PwsError(f"Collection {ns.id} has no organizationId")
+            raise VwcliError(f"Collection {ns.id} has no organizationId")
 
         try:
             self.bw_update_collection(ns.id, org_id, name, ns.to_parent_id)
             print(f"Moved collection [{ns.id}] to parent [{ns.to_parent_id}]")
             return
-        except PwsError:
+        except VwcliError:
             pass
 
         print("[info] Direct parent update not supported, using bulk fallback...")
@@ -1811,8 +1597,8 @@ class Pws:
             new_col = self.bw_create_collection(org_id, name, ns.to_parent_id)
             new_id = str(new_col.get("id") or "") if isinstance(new_col, dict) else ""
             if not new_id:
-                raise PwsError("Failed to create target collection")
-        except PwsError:
+                raise VwcliError("Failed to create target collection")
+        except VwcliError:
             print("[info] Bulk fallback requires creating new collection.")
             raise
 
@@ -1831,7 +1617,7 @@ class Pws:
                     self.bw_set_item_collections(item_id, org_id, [new_id])
                     moved.append((item_id, item_name))
                     print(f"  Moved item: {item_name} [{item_id}]")
-                except PwsError as e:
+                except VwcliError as e:
                     print(f"  [error] {item_name} [{item_id}]: {e}", file=sys.stderr)
                     errors += 1
             if errors:
@@ -1842,19 +1628,19 @@ class Pws:
                 for item_id, item_name in moved:
                     try:
                         self.bw_set_item_collections(item_id, org_id, [ns.id])
-                    except PwsError as e:
+                    except VwcliError as e:
                         print(
                             f"  [error] rollback failed for {item_name} [{item_id}]: {e}",
                             file=sys.stderr,
                         )
                 try:
                     self.bw_delete_collection(new_id, org_id)
-                except PwsError:
+                except VwcliError:
                     print(
                         f"[warn] Could not delete partially-created collection [{new_id}].",
                         file=sys.stderr,
                     )
-                raise PwsError(
+                raise VwcliError(
                     f"{errors} item(s) failed to move. Rolled back; original collection [{ns.id}] is intact."
                 )
 
@@ -1862,7 +1648,6 @@ class Pws:
         print(
             f"Moved collection '{name}' [{ns.id}] -> [{new_id}] (under parent [{ns.to_parent_id}])"
         )
-
     def cmd_delete(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         item_id = self._resolve_item_id(ns)
@@ -1874,7 +1659,6 @@ class Pws:
                 return
         self.bw_delete_item(item_id)
         print(f"Deleted item [{item_id}]")
-
     def cmd_move(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         if ns.refresh_cache:
@@ -1889,15 +1673,15 @@ class Pws:
         dst_org = str(dst_col.get("organizationId") or "")
 
         if not src_org:
-            raise PwsError(
+            raise VwcliError(
                 f"Source collection '{ns.from_collection}' has no organizationId"
             )
         if not dst_org:
-            raise PwsError(
+            raise VwcliError(
                 f"Target collection '{ns.to_collection}' has no organizationId"
             )
         if src_org != dst_org:
-            raise PwsError(
+            raise VwcliError(
                 f"Collections belong to different organizations ({src_org} vs {dst_org})"
             )
 
@@ -1932,14 +1716,13 @@ class Pws:
             try:
                 self.bw_set_item_collections(item_id, dst_org, [dst_id])
                 print(f"  Moved: {name} [{item_id}]")
-            except PwsError as e:
+            except VwcliError as e:
                 print(f"  [error] {name} [{item_id}]: {e}", file=sys.stderr)
                 errors += 1
 
         if errors:
-            raise PwsError(f"{errors} item(s) failed to move.")
+            raise VwcliError(f"{errors} item(s) failed to move.")
         print(f"Done. Moved {len(items)} item(s) to '{ns.to_collection}'.")
-
     def cmd_cache_collections(self, _ns: argparse.Namespace) -> None:
         print(
             "[warn] 'cache-collections' is deprecated; use 'collections cache' instead.",
@@ -1947,469 +1730,3 @@ class Pws:
         )
         self.refresh_collections_cache()
 
-    _KNOWN_COMMANDS = frozenset(
-        {
-            "help",
-            "login",
-            "create",
-            "update",
-            "clone",
-            "search",
-            "delete",
-            "move",
-            "attachment",
-            "collections",
-            "cache-collections",
-        }
-    )
-
-    def run(self, argv: list[str]) -> int:
-        args = argv[1:]
-        if args and not args[0].startswith("-") and args[0] not in self._KNOWN_COMMANDS:
-            args = ["search", *args]
-        if args and args[0] == "cache-collections":
-            print(
-                "[warn] 'cache-collections' is deprecated; use 'collections cache' instead.",
-                file=sys.stderr,
-            )
-            args = ["collections", "cache", *args[1:]]
-
-        parser = self._build_parser()
-        ns = parser.parse_args(args)
-
-        if not ns.command or ns.command == "help":
-            parser.print_help()
-            return 0
-
-        self.need_bw()
-
-        dispatch: dict[str, tuple[Callable[[argparse.Namespace], None], bool]] = {
-            "login": (self.cmd_login, False),
-            "create": (self.cmd_create, True),
-            "update": (self.cmd_update, True),
-            "clone": (self.cmd_update, True),
-            "search": (self.cmd_search, True),
-            "delete": (self.cmd_delete, False),
-            "move": (self.cmd_move, True),
-            "attachment": (self.cmd_attachment, False),
-            "collections": (self.cmd_collections, True),
-            "cache-collections": (self.cmd_cache_collections, False),
-        }
-
-        cmd_func, use_serve = dispatch[ns.command]
-        if use_serve:
-            self.with_bw_serve(cmd_func, ns)
-        else:
-            cmd_func(ns)
-        return 0
-
-    @staticmethod
-    def _build_parser() -> argparse.ArgumentParser:
-        def add_update_options(
-            p: argparse.ArgumentParser, *, include_clone_flag: bool, force_clone: bool
-        ) -> None:
-            sel = p.add_mutually_exclusive_group(required=True)
-            sel.add_argument("--id", default="", metavar="VALUE", help="Exact item ID")
-            sel.add_argument(
-                "--search",
-                default="",
-                metavar="VALUE",
-                help="Search string (must resolve to exactly one item)",
-            )
-            p.add_argument("--name", default="", metavar="VALUE")
-            p.add_argument("--username", default="", metavar="VALUE")
-            pwd_group = p.add_mutually_exclusive_group()
-            pwd_group.add_argument("--password", default="", metavar="VALUE")
-            pwd_group.add_argument(
-                "--generate-password",
-                dest="generate_password",
-                action="store_true",
-                help="Auto-generate a secure password (printed to stdout after update)",
-            )
-            p.add_argument("--notes", default="", metavar="VALUE")
-            p.add_argument(
-                "--organization-id", dest="organization_id", default="", metavar="VALUE"
-            )
-            p.add_argument(
-                "--uri",
-                dest="uris",
-                action="append",
-                default=[],
-                metavar="URL[::MATCH]",
-                help="Replace all URIs; append ::MATCH_TYPE (default, base_domain, host, starts_with, exact, regexp, never)",
-            )
-            p.add_argument(
-                "--add-uri",
-                dest="add_uris",
-                action="append",
-                default=[],
-                metavar="URL[::MATCH]",
-                help="Add a URI to the existing list (supports ::MATCH_TYPE suffix)",
-            )
-            p.add_argument(
-                "--remove-uri",
-                dest="remove_uris",
-                action="append",
-                default=[],
-                metavar="URL",
-                help="Remove a URI from the existing list by exact URL",
-            )
-            p.add_argument(
-                "--collection",
-                default="",
-                metavar="VALUE",
-                help="Collection name (resolved via cache; must be unique)",
-            )
-            p.add_argument(
-                "--vault",
-                default="",
-                metavar="NAME",
-                help="Vault (organization name) to place the item in; resolves to organizationId",
-            )
-            if include_clone_flag:
-                p.add_argument(
-                    "--clone",
-                    action="store_true",
-                    help="Clone selected item first, then update clone",
-                )
-            p.add_argument(
-                "--refresh-cache",
-                dest="refresh_cache",
-                action="store_true",
-                help="Refresh collection cache before resolving collection",
-            )
-            p.add_argument(
-                "--dry-run",
-                dest="dry_run",
-                action="store_true",
-                help="Print JSON that would be sent, do not modify vault",
-            )
-            p.add_argument(
-                "--to-ansible-vault",
-                dest="to_ansible_vault",
-                action="store_true",
-                help="Encrypt resulting password via ansible-vault encrypt-string",
-            )
-            p.set_defaults(clone=force_clone)
-
-        parser = argparse.ArgumentParser(
-            prog="pws",
-            description="Bitwarden/Vaultwarden CLI wrapper",
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-        )
-        sub = parser.add_subparsers(dest="command")
-        sub.add_parser("help", help="Show this help")
-        sub.add_parser(
-            "login", help="Unlock vault and cache BW_SESSION to ~/.config/pws/config"
-        )
-
-        p_create = sub.add_parser("create", help="Create a new login item")
-        p_create.add_argument("--name", required=True, metavar="VALUE")
-        p_create.add_argument("--username", default="", metavar="VALUE")
-        pwd_group = p_create.add_mutually_exclusive_group()
-        pwd_group.add_argument("--password", default="", metavar="VALUE")
-        pwd_group.add_argument(
-            "--generate-password",
-            dest="generate_password",
-            action="store_true",
-            help="Auto-generate a secure password (printed to stdout after creation)",
-        )
-        p_create.add_argument("--notes", default=None, metavar="VALUE")
-        p_create.add_argument(
-            "--organization-id", dest="organization_id", default="", metavar="VALUE"
-        )
-        p_create.add_argument(
-            "--uri",
-            dest="uris",
-            action="append",
-            default=[],
-            metavar="URL[::MATCH]",
-            help="URI for autofill; append ::MATCH_TYPE to set match (default, base_domain, host, starts_with, exact, regexp, never)",
-        )
-        p_create.add_argument(
-            "--collection",
-            default="",
-            metavar="VALUE",
-            help="Collection name (resolved via cache; must be unique)",
-        )
-        p_create.add_argument(
-            "--vault",
-            default="",
-            metavar="NAME",
-            help="Vault (organization name) to create the item in; resolves to organizationId",
-        )
-        p_create.add_argument(
-            "--refresh-cache",
-            dest="refresh_cache",
-            action="store_true",
-            help="Refresh collection cache before resolving collection",
-        )
-        p_create.add_argument(
-            "--dry-run",
-            dest="dry_run",
-            action="store_true",
-            help="Print JSON that would be sent, do not modify vault",
-        )
-
-        p_update = sub.add_parser(
-            "update", help="Update an existing item, or clone and update the clone"
-        )
-        add_update_options(p_update, include_clone_flag=True, force_clone=False)
-
-        p_clone = sub.add_parser("clone", help="Alias for: update --clone")
-        add_update_options(p_clone, include_clone_flag=False, force_clone=True)
-
-        p_search = sub.add_parser("search", help="Search items")
-        p_search.add_argument("query", nargs="*", metavar="QUERY")
-        p_search.add_argument(
-            "--uri",
-            dest="uri_filter",
-            default="",
-            metavar="URL",
-            help="Filter results to items whose URI list contains this URL (substring match)",
-        )
-        p_search.add_argument(
-            "--json", dest="output_json", action="store_true", help="Print raw JSON"
-        )
-        p_search.add_argument(
-            "--limit",
-            type=int,
-            default=20,
-            metavar="N",
-            help="Limit text output rows (default: 20)",
-        )
-        p_search.add_argument(
-            "--to-ansible-vault",
-            dest="to_ansible_vault",
-            action="store_true",
-            help="Encrypt first matched item password via ansible-vault encrypt-string",
-        )
-
-        p_delete = sub.add_parser("delete", help="Delete an item (moves to trash)")
-        del_sel = p_delete.add_mutually_exclusive_group(required=True)
-        del_sel.add_argument("--id", default="", metavar="VALUE", help="Exact item ID")
-        del_sel.add_argument(
-            "--search",
-            default="",
-            metavar="VALUE",
-            help="Search string (must resolve to exactly one item)",
-        )
-        p_delete.add_argument(
-            "--yes", "-y", action="store_true", help="Skip confirmation prompt"
-        )
-
-        p_move = sub.add_parser(
-            "move", help="Bulk move items from one collection to another"
-        )
-        p_move.add_argument(
-            "--from",
-            dest="from_collection",
-            required=True,
-            metavar="COLLECTION",
-            help="Source collection name",
-        )
-        p_move.add_argument(
-            "--to",
-            dest="to_collection",
-            required=True,
-            metavar="COLLECTION",
-            help="Target collection name",
-        )
-        p_move.add_argument(
-            "--search",
-            default="",
-            metavar="VALUE",
-            help="Filter items by name (substring match); omit to move all items",
-        )
-        p_move.add_argument(
-            "--refresh-cache",
-            dest="refresh_cache",
-            action="store_true",
-            help="Refresh collection cache before resolving collections",
-        )
-        p_move.add_argument(
-            "--dry-run",
-            dest="dry_run",
-            action="store_true",
-            help="List items that would be moved without making changes",
-        )
-        p_move.add_argument(
-            "--yes", "-y", action="store_true", help="Skip confirmation prompt"
-        )
-
-        p_col = sub.add_parser("collections", help="Manage collections")
-        col_sub = p_col.add_subparsers(dest="collections_command")
-
-        col_sub.add_parser(
-            "cache",
-            help="Refresh local collection cache (~/.cache/bw-cli/collections.json)",
-        )
-
-        p_col_list = col_sub.add_parser("list", help="List collections")
-        p_col_list.add_argument(
-            "--refresh-cache",
-            dest="refresh_cache",
-            action="store_true",
-            help="Refresh cache before listing",
-        )
-
-        p_col_add = col_sub.add_parser("add", help="Create a new collection")
-        p_col_add.add_argument(
-            "--name", required=True, metavar="VALUE", help="Collection name"
-        )
-        p_col_add.add_argument(
-            "--organization-id",
-            dest="organization_id",
-            default="",
-            metavar="VALUE",
-            help="Organization ID (defaults to parent's organization if --parent-id is given)",
-        )
-        p_col_add.add_argument(
-            "--parent-id",
-            dest="parent_id",
-            default="",
-            metavar="VALUE",
-            help="Parent collection ID for nesting",
-        )
-
-        p_col_search = col_sub.add_parser(
-            "search", help="Search collections in local cache"
-        )
-        p_col_search.add_argument(
-            "query", nargs="+", metavar="QUERY", help="Substring to match against collection full paths"
-        )
-
-        p_col_upd = col_sub.add_parser(
-            "update", help="Update a collection (rename or change parent)"
-        )
-        p_col_upd.add_argument(
-            "--id", required=True, metavar="VALUE", help="Collection ID"
-        )
-        p_col_upd.add_argument(
-            "--name", required=True, metavar="VALUE", help="New collection name"
-        )
-        p_col_upd.add_argument(
-            "--parent-id",
-            dest="parent_id",
-            default="",
-            metavar="VALUE",
-            help="Parent collection ID for nesting",
-        )
-
-        p_col_del = col_sub.add_parser("delete", help="Delete a collection")
-        p_col_del.add_argument(
-            "--id", required=True, metavar="VALUE", help="Collection ID"
-        )
-        p_col_del.add_argument(
-            "--organization-id",
-            dest="organization_id",
-            default="",
-            metavar="VALUE",
-            help="Organization ID (required for some backends)",
-        )
-        p_col_del.add_argument(
-            "--yes", "-y", action="store_true", help="Skip confirmation prompt"
-        )
-
-        p_col_move = col_sub.add_parser(
-            "move", help="Move a collection under a different parent"
-        )
-        p_col_move.add_argument(
-            "--id", required=True, metavar="VALUE", help="Collection ID"
-        )
-        p_col_move.add_argument(
-            "--to-parent-id",
-            dest="to_parent_id",
-            required=True,
-            metavar="VALUE",
-            help="Target parent collection ID",
-        )
-
-        p_att = sub.add_parser("attachment", help="Manage item attachments")
-        att_top_sel = p_att.add_mutually_exclusive_group()
-        att_top_sel.add_argument(
-            "--id",
-            default="",
-            metavar="VALUE",
-            help="Item ID (default: list attachments)",
-        )
-        att_top_sel.add_argument(
-            "--search",
-            default="",
-            metavar="VALUE",
-            help="Search string (default: list attachments)",
-        )
-        p_att.add_argument(
-            "--json",
-            dest="output_json",
-            action="store_true",
-            help="Print raw JSON (default: list attachments)",
-        )
-        att_sub = p_att.add_subparsers(dest="attachment_command")
-
-        p_att_show = att_sub.add_parser(
-            "list", help="List attachments for an item (default)"
-        )
-        att_show_sel = p_att_show.add_mutually_exclusive_group(required=True)
-        att_show_sel.add_argument("--id", default="", metavar="VALUE", help="Item ID")
-        att_show_sel.add_argument(
-            "--search",
-            default="",
-            metavar="VALUE",
-            help="Search string (must resolve to one item)",
-        )
-        p_att_show.add_argument(
-            "--json", dest="output_json", action="store_true", help="Print raw JSON"
-        )
-
-        p_att_add = att_sub.add_parser("add", help="Upload a file as an attachment")
-        att_add_sel = p_att_add.add_mutually_exclusive_group(required=True)
-        att_add_sel.add_argument("--id", default="", metavar="VALUE", help="Item ID")
-        att_add_sel.add_argument(
-            "--search",
-            default="",
-            metavar="VALUE",
-            help="Search string (must resolve to one item)",
-        )
-        p_att_add.add_argument(
-            "--file", required=True, metavar="PATH", help="Path to file to upload"
-        )
-
-        p_att_del = att_sub.add_parser(
-            "delete", help="Delete an attachment from an item"
-        )
-        att_del_sel = p_att_del.add_mutually_exclusive_group(required=True)
-        att_del_sel.add_argument("--id", default="", metavar="VALUE", help="Item ID")
-        att_del_sel.add_argument(
-            "--search",
-            default="",
-            metavar="VALUE",
-            help="Search string (must resolve to one item)",
-        )
-        p_att_del.add_argument(
-            "--attachment-id",
-            dest="attachment_id",
-            required=True,
-            metavar="VALUE",
-            help="Attachment ID (from attachment list)",
-        )
-
-        return parser
-
-
-def main() -> int:
-    app = Pws()
-    atexit.register(app.stop_bw_serve)
-    try:
-        return app.run(sys.argv)
-    except PwsError as exc:
-        if str(exc):
-            print(str(exc), file=sys.stderr)
-        return 1
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

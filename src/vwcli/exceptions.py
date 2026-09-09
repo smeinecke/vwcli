@@ -1,0 +1,3 @@
+class VwcliError(Exception):
+    pass
+
