@@ -362,11 +362,11 @@ class Client:
                 raise VwcliError(str(exc))
 
     def bw_serve_sync(self) -> None:
-        """Ask the running bw serve process to sync its vault data from the server."""
+        """Ask the running bw serve process to force a full sync of its vault data."""
         if not self.bw_serve_url:
             return
         with contextlib.suppress(VwcliError):
-            self.bw_serve_request_json("POST", "/sync")
+            self.bw_serve_request_json("POST", "/sync?force=full")
 
     def bw_serve_request_json(self, method: str, path: str, json_body: Any | None = None) -> dict[str, Any]:
         if not self.bw_serve_url:
