@@ -112,6 +112,7 @@ def _create_organization_and_collections(server: VaultwardenServer) -> None:
     """Provision a test organization with Source and Target collections."""
     env = os.environ.copy()
     env["HOME"] = str(server.home)
+    env["XDG_CONFIG_HOME"] = str(server.home / ".config")
     env["BW_SESSION"] = server.session
     env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
 
@@ -221,6 +222,7 @@ def _register_user(url: str, email: str, password: str) -> None:
 def _bw_login(url: str, email: str, password: str, home: Path) -> str:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
     env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     subprocess.run(["bw", "logout"], env=env, capture_output=True, check=False)
     subprocess.run(["bw", "config", "server", url], env=env, capture_output=True, check=True)
@@ -280,6 +282,7 @@ def _start_bw_serve_tcp(home: Path, session: str) -> tuple[str, subprocess.Popen
     port = _free_port()
     env = os.environ.copy()
     env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
     env["BW_SESSION"] = session
     env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     proc = subprocess.Popen(
@@ -306,6 +309,7 @@ def _start_bw_serve_unix(home: Path, session: str) -> tuple[str, subprocess.Pope
         raise RuntimeError("node and bw are required for the unix socket service test")
     env = os.environ.copy()
     env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
     env["BW_SESSION"] = session
     env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     env["BW_SERVE_SOCKET"] = socket_path_str
@@ -403,6 +407,7 @@ def integration_env(
 ) -> Path:
     """Provide env for an integration test using the TCP bw serve."""
     monkeypatch.setenv("HOME", str(vaultwarden_server.home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(vaultwarden_server.home / ".config"))
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_tcp)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
@@ -421,6 +426,7 @@ def integration_env_both(
 ) -> Path:
     """Run the test once against the TCP serve and once against the Unix socket serve."""
     monkeypatch.setenv("HOME", str(vaultwarden_server.home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(vaultwarden_server.home / ".config"))
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     if request.param == "unix":
         monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_unix)
@@ -440,6 +446,7 @@ def integration_env_unix(
 ) -> Path:
     """Provide env for an integration test using the Unix socket bw serve."""
     monkeypatch.setenv("HOME", str(vaultwarden_server.home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(vaultwarden_server.home / ".config"))
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_unix)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
@@ -455,6 +462,7 @@ def integration_env_fallback(
 ) -> Path:
     """Provide env for an integration test that falls back to bw CLI commands."""
     monkeypatch.setenv("HOME", str(vaultwarden_server.home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(vaultwarden_server.home / ".config"))
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.delenv("BW_SERVE_URL", raising=False)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
