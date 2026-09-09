@@ -1,0 +1,19 @@
+---
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8443:8443"
+    environment:
+      SIGNUPS_ALLOWED: "true"
+      ROCKET_ADDRESS: "0.0.0.0"
+      ROCKET_PORT: "8443"
+      ROCKET_TLS: '{certs="/ssl/cert.pem",key="/ssl/key.pem"}'
+    volumes:
+      - vw_tmp_data:/data
+      - ${VW_FALLBACK_TLS_DIR:-./.tls}:/ssl:ro
+
+volumes:
+  vw_tmp_data:

@@ -1,0 +1,26 @@
+[Unit]
+Description=Bitwarden CLI service
+After=network.target
+StartLimitIntervalSec=30min
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/start-bw-serve.sh
+EnvironmentFile=%h/.config/systemd/user/bitwarden-cli.env
+Environment=BW_SERVE_SOCKET=/run/user/%U/bw.sock
+Environment=PATCH_JS=%h/.local/lib/bw-unix-socket-patch.js
+WorkingDirectory=%h
+ProtectSystem=full
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Deny any explicit TCP bind() so bw serve cannot open a TCP listener
+# if the Unix-socket patch is missing/broken.
+SocketBindDeny=tcp
+
+# slow down retries if start fails
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target

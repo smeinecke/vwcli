@@ -1,0 +1,11 @@
+[Unit]
+Description=Bitwarden encrypted export backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+EnvironmentFile=%h/.config/systemd/user/bitwarden-cli.env
+ExecStart=%h/.local/bin/bitwarden-backup.sh
+
+[Install]
+WantedBy=default.target

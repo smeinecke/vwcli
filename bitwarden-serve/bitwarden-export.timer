@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic Bitwarden encrypted export backup
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=6h
+Unit=bitwarden-export.service
+
+[Install]
+WantedBy=timers.target
