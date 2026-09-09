@@ -46,6 +46,7 @@ class VaultwardenServer:
     org_id: str = ""
     source_collection_id: str = ""
     target_collection_id: str = ""
+    ansible_vault_password_file: Path = dataclasses.field(default_factory=Path)
 
 
 TEST_EMAIL = "integration-test@example.com"
@@ -353,6 +354,12 @@ def vaultwarden_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[Va
 
     server = VaultwardenServer(url=url, email=TEST_EMAIL, password=TEST_PASSWORD, session=session, home=home, tls_dir=tls_dir)
     _create_organization_and_collections(server)
+
+    # Provide an ansible-vault password file so ansible-vault E2E tests can run
+    ansible_vault_file = home / "ansible-vault-password.txt"
+    ansible_vault_file.write_text("integration-vault-password", encoding="utf-8")
+    server.ansible_vault_password_file = ansible_vault_file
+
     yield server
 
     for proc in server.serve_procs:
@@ -399,6 +406,8 @@ def integration_env(
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_tcp)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
+    if vaultwarden_server.ansible_vault_password_file:
+        monkeypatch.setenv("ANSIBLE_VAULT_PASSWORD_FILE", str(vaultwarden_server.ansible_vault_password_file))
     return vaultwarden_server.home
 
 
@@ -418,6 +427,8 @@ def integration_env_both(
     else:
         monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_tcp)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
+    if vaultwarden_server.ansible_vault_password_file:
+        monkeypatch.setenv("ANSIBLE_VAULT_PASSWORD_FILE", str(vaultwarden_server.ansible_vault_password_file))
     return vaultwarden_server.home
 
 
@@ -432,6 +443,8 @@ def integration_env_unix(
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_unix)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
+    if vaultwarden_server.ansible_vault_password_file:
+        monkeypatch.setenv("ANSIBLE_VAULT_PASSWORD_FILE", str(vaultwarden_server.ansible_vault_password_file))
     return vaultwarden_server.home
 
 
@@ -445,4 +458,6 @@ def integration_env_fallback(
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.delenv("BW_SERVE_URL", raising=False)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
+    if vaultwarden_server.ansible_vault_password_file:
+        monkeypatch.setenv("ANSIBLE_VAULT_PASSWORD_FILE", str(vaultwarden_server.ansible_vault_password_file))
     return vaultwarden_server.home

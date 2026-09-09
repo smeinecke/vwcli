@@ -1,6 +1,10 @@
 import json
+import os
 import re
+import subprocess
+import tempfile
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -292,3 +296,153 @@ def test_vwcli_negative_cases(integration_env, capsys: pytest.CaptureFixture[str
     # Delete something that does not exist
     rc = _run(Client(), "delete", "--search", f"{unique}-missing", "--yes")
     assert rc == 1, "expected non-zero exit for delete of missing item"
+
+
+def _extract_ansible_vault_blob(output: str) -> str:
+    """Parse the YAML-ish output of `ansible-vault encrypt_string` and return the raw vault blob."""
+    lines: list[str] = []
+    collecting = False
+    for line in output.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("$ANSIBLE_VAULT;"):
+            collecting = True
+            lines.append(stripped)
+        elif collecting:
+            if not stripped or not all(c in "0123456789abcdefABCDEF" for c in stripped):
+                break
+            lines.append(stripped)
+    if not lines:
+        raise AssertionError(f"Could not find an ansible-vault blob in: {output!r}")
+    return "\n".join(lines)
+
+
+def _decrypt_ansible_vault_blob(blob: str, password_file: Path) -> str:
+    """Decrypt an ansible-vault blob and return the plaintext."""
+    with tempfile.NamedTemporaryFile("w", suffix=".vault", delete=False) as tmp:
+        tmp.write(blob)
+        tmp_path = tmp.name
+    try:
+        env = os.environ.copy()
+        env["ANSIBLE_VAULT_PASSWORD_FILE"] = str(password_file)
+        run = subprocess.run(
+            ["ansible-vault", "decrypt", tmp_path, "--output", "-"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if run.returncode != 0:
+            raise AssertionError(f"ansible-vault decrypt failed: {run.stderr}")
+        return run.stdout
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_vwcli_ansible_vault_create(integration_env, vaultwarden_server, capsys: pytest.CaptureFixture[str]) -> None:
+    unique = f"vwcli-ansible-create-{uuid.uuid4().hex[:8]}"
+    password = "super-secret-ansible-password"
+
+    rc = _run(
+        Client(),
+        "create",
+        "--name",
+        unique,
+        "--username",
+        "ansible@example.com",
+        "--password",
+        password,
+        "--to-ansible-vault",
+    )
+    captured = capsys.readouterr()
+    assert rc == 0, f"create --to-ansible-vault failed: {captured.err}"
+    assert "Created item" in captured.out
+
+    blob = _extract_ansible_vault_blob(captured.out)
+    decrypted = _decrypt_ansible_vault_blob(blob, vaultwarden_server.ansible_vault_password_file)
+    assert decrypted == password
+
+    _run(Client(), "delete", "--search", unique, "--yes")
+
+
+def test_vwcli_ansible_vault_search(integration_env, vaultwarden_server, capsys: pytest.CaptureFixture[str]) -> None:
+    unique = f"vwcli-ansible-search-{uuid.uuid4().hex[:8]}"
+    password = "searchable-ansible-password"
+
+    rc = _run(
+        Client(),
+        "create",
+        "--name",
+        unique,
+        "--username",
+        "ansible@example.com",
+        "--password",
+        password,
+    )
+    assert rc == 0
+
+    rc = _run(Client(), "search", unique, "--to-ansible-vault")
+    captured = capsys.readouterr()
+    assert rc == 0, f"search --to-ansible-vault failed: {captured.err}"
+
+    blob = _extract_ansible_vault_blob(captured.out)
+    decrypted = _decrypt_ansible_vault_blob(blob, vaultwarden_server.ansible_vault_password_file)
+    assert decrypted == password
+
+    _run(Client(), "delete", "--search", unique, "--yes")
+
+
+def test_vwcli_ansible_vault_update(integration_env, vaultwarden_server, capsys: pytest.CaptureFixture[str]) -> None:
+    unique = f"vwcli-ansible-update-{uuid.uuid4().hex[:8]}"
+    new_password = "updated-ansible-password"
+
+    rc = _run(
+        Client(),
+        "create",
+        "--name",
+        unique,
+        "--username",
+        "ansible@example.com",
+        "--password",
+        "initial-password",
+    )
+    assert rc == 0
+
+    rc = _run(Client(), "update", "--search", unique, "--password", new_password, "--to-ansible-vault")
+    captured = capsys.readouterr()
+    assert rc == 0, f"update --to-ansible-vault failed: {captured.err}"
+    assert "Updated item" in captured.out
+
+    blob = _extract_ansible_vault_blob(captured.out)
+    decrypted = _decrypt_ansible_vault_blob(blob, vaultwarden_server.ansible_vault_password_file)
+    assert decrypted == new_password
+
+    _run(Client(), "delete", "--search", unique, "--yes")
+
+
+def test_vwcli_ansible_vault_clone(integration_env, vaultwarden_server, capsys: pytest.CaptureFixture[str]) -> None:
+    unique = f"vwcli-ansible-clone-{uuid.uuid4().hex[:8]}"
+    password = "clonable-ansible-password"
+
+    rc = _run(
+        Client(),
+        "create",
+        "--name",
+        unique,
+        "--username",
+        "ansible@example.com",
+        "--password",
+        password,
+    )
+    assert rc == 0
+
+    rc = _run(Client(), "clone", "--search", unique, "--name", f"{unique}-clone", "--to-ansible-vault")
+    captured = capsys.readouterr()
+    assert rc == 0, f"clone --to-ansible-vault failed: {captured.err}"
+    assert "Cloned item" in captured.out
+
+    blob = _extract_ansible_vault_blob(captured.out)
+    decrypted = _decrypt_ansible_vault_blob(blob, vaultwarden_server.ansible_vault_password_file)
+    assert decrypted == password
+
+    _run(Client(), "delete", "--search", unique, "--yes")
+    _run(Client(), "delete", "--search", f"{unique}-clone", "--yes")
