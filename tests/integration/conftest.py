@@ -145,6 +145,20 @@ def _bw_login(url: str, email: str, password: str, home: Path) -> str:
     return run.stdout.strip()
 
 
+def _assert_no_tcp_listener(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    ss = shutil.which("ss")
+    if not ss:
+        return
+    try:
+        run = subprocess.run([ss, "-ltnp"], capture_output=True, text=True, check=False, timeout=2)
+    except Exception:
+        return
+    if f"pid={proc.pid}" in run.stdout:
+        raise RuntimeError(f"bw serve (pid {proc.pid}) is listening on TCP; expected Unix socket only")
+
+
 def _ping_serve_url(serve_url: str, timeout: float = 20.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -215,6 +229,7 @@ def _start_bw_serve_unix(home: Path, session: str) -> tuple[str, subprocess.Pope
     if proc.poll() is not None:
         raise RuntimeError("bw serve (unix) exited immediately")
     _ping_serve_url(serve_url, timeout=20.0)
+    _assert_no_tcp_listener(proc)
     return serve_url, proc
 
 
