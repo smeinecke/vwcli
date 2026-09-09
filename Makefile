@@ -1,6 +1,6 @@
 # Makefile for vwcli
 
-.PHONY: all format reformat-ruff check fix-ruff fix test test-cov vulture xenon bandit pyright validate
+.PHONY: all format reformat-ruff check fix-ruff fix test test-cov integration-test vulture xenon bandit pyright validate
 
 # Default target: run validation and tests
 all: validate test
@@ -27,6 +27,9 @@ test:
 
 test-cov:
 	uv run pytest tests --cov --cov-report=xml --cov-report=term-missing
+
+integration-test:
+	uv run pytest tests/integration -m integration -v
 
 vulture:
 	uv run vulture . --exclude .venv,tests --make-whitelist

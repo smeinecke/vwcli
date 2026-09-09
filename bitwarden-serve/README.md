@@ -176,3 +176,23 @@ curl -s --unix-socket "$SOCK" http://localhost/status | jq .
 ## vwcli integration
 
 The installer automatically writes `BW_SERVE_URL=unix:///run/user/<uid>/bw.sock` to `~/.config/vwcli/config`. `vwcli` parses the `unix://` scheme and connects via the domain socket instead of TCP - no manual configuration is needed.
+
+## Integration testing
+
+The repository includes an end-to-end integration test harness under `tests/integration/`.
+
+It will:
+
+1. Start an ephemeral Vaultwarden container on `https://127.0.0.1:18443` using a self-signed certificate.
+2. Register a hardcoded demo user.
+3. Run `bw login` against the container.
+4. Start `bw serve` on a free local TCP port.
+5. Exercise `vwcli create`, `search`, `update` and `delete` through `bw serve`.
+
+Run the integration tests locally with:
+
+```bash
+make integration-test
+```
+
+Requirements: `docker compose`, `openssl`, `bw` in `PATH`, and Node.js for `bw`.
