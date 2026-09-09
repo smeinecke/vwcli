@@ -143,7 +143,7 @@ class Client:
         if run.returncode == 0:
             return run.stdout
 
-        err_msg = run.stderr
+        err_msg = run.stderr or run.stdout
         if BW_STALE_CIPHER_ERR in err_msg:
             print(
                 "[info] Cipher state is stale, running bw sync and retrying once...",
@@ -153,7 +153,7 @@ class Client:
             run = self._bw_cmd(args, input_text=input_text, capture=True)
             if run.returncode == 0:
                 return run.stdout
-            err_msg = run.stderr
+            err_msg = run.stderr or run.stdout
 
         if err_msg:
             print(err_msg, end="" if err_msg.endswith("\n") else "\n", file=sys.stderr)
@@ -771,12 +771,20 @@ class Client:
     def cmd_login(self, _ns: argparse.Namespace) -> None:
         self.config.ensure_dir()
 
+        # If we already have a session and bw reports a valid login, just cache it.
+        if self.bw_session and self._bw_cmd(["login", "--check"]).returncode == 0:
+            self._apply_new_session(self.bw_session, restart_service=True)
+            return
+
         if self._bw_cmd(["login", "--check"]).returncode != 0:
             print("[info] No active bw login, starting interactive login...")
             if self.bw_run_interactive(["login"]) != 0:
                 raise VwcliError("bw login failed")
 
-        session = self.bw_run(["unlock", "--raw"]).strip()
+        unlock_args = ["unlock", "--raw"]
+        if os.environ.get("BW_PASSWORD"):
+            unlock_args.extend(["--passwordenv", "BW_PASSWORD"])
+        session = self.bw_run(unlock_args).strip()
         if not session:
             raise VwcliError("Failed to obtain BW_SESSION from bw unlock")
 
@@ -1298,6 +1306,12 @@ class Client:
         file_path = ns.file
         if not Path(file_path).exists():
             raise VwcliError(f"File not found: {file_path}")
+
+        # When bw serve is active, the bw CLI cache can lag behind; ensure it is
+        # in sync before editing an item through the CLI.
+        if self.bw_serve_url:
+            self.bw_run(["sync"])
+
         result = self.bw_create_attachment(item_id, file_path)
         att_list = result.get("attachments") or []
         added = att_list[-1] if att_list else {}
@@ -1306,6 +1320,8 @@ class Client:
     def cmd_attachment_delete(self, ns: argparse.Namespace) -> None:
         self.ensure_session()
         item_id = self._resolve_item_id(ns)
+        if self.bw_serve_url:
+            self.bw_run(["sync"])
         self.bw_delete_attachment(item_id, ns.attachment_id)
         print(f"Attachment [{ns.attachment_id}] deleted from item [{item_id}]")
 
@@ -1452,6 +1468,7 @@ class Client:
         result = self.bw_create_collection(org_id, name, parent_id)
         col_id = result.get("id") if isinstance(result, dict) else None
         print(f"Created collection '{name}' [{col_id}]")
+        self.bw_serve_sync()
 
         if self.config.collection_cache.exists() and col_id:
             try:
@@ -1481,6 +1498,7 @@ class Client:
         result = self.bw_update_collection(ns.id, org_id, ns.name, ns.parent_id or "")
         col_id = result.get("id") if isinstance(result, dict) else ns.id
         print(f"Updated collection [{col_id}] name='{ns.name}'")
+        self.bw_serve_sync()
 
         if self.config.collection_cache.exists():
             with contextlib.suppress(VwcliError):
@@ -1489,16 +1507,26 @@ class Client:
     def cmd_collections_delete(self, ns: argparse.Namespace) -> None:
         if not ns.id:
             raise VwcliError("--id is required")
+
+        current = self.bw_get_collection(ns.id)
+        data = current.get("data", {}) if isinstance(current, dict) else {}
+        name = str(data.get("name") or "") if isinstance(data, dict) else ""
+        org_id = str(data.get("organizationId") or "") if isinstance(data, dict) else ""
+
+        if not org_id:
+            org_id = ns.organization_id or ""
+        if not org_id:
+            raise VwcliError(f"Collection {ns.id} has no organizationId")
+
         if not ns.yes:
-            current = self.bw_get_collection(ns.id)
-            data = current.get("data", {}) if isinstance(current, dict) else {}
-            name = str(data.get("name") or "") if isinstance(data, dict) else ""
             ans = input(f"Delete collection '{name}' [{ns.id}]? [y/N] ")
             if ans.strip().lower() != "y":
                 print("Aborted.")
                 return
-        self.bw_delete_collection(ns.id, ns.organization_id or "")
+
+        self.bw_delete_collection(ns.id, org_id)
         print(f"Deleted collection [{ns.id}]")
+        self.bw_serve_sync()
 
     def cmd_collections_move(self, ns: argparse.Namespace) -> None:
         if not ns.id or not ns.to_parent_id:
@@ -1515,6 +1543,7 @@ class Client:
         try:
             self.bw_update_collection(ns.id, org_id, name, ns.to_parent_id)
             print(f"Moved collection [{ns.id}] to parent [{ns.to_parent_id}]")
+            self.bw_serve_sync()
             return
         except VwcliError:
             pass
@@ -1569,6 +1598,7 @@ class Client:
 
         self.bw_delete_collection(ns.id, org_id)
         print(f"Moved collection '{name}' [{ns.id}] -> [{new_id}] (under parent [{ns.to_parent_id}])")
+        self.bw_serve_sync()
 
     def cmd_delete(self, ns: argparse.Namespace) -> None:
         self.ensure_session()

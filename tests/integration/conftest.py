@@ -409,6 +409,7 @@ def integration_env(
     monkeypatch.setenv("HOME", str(vaultwarden_server.home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(vaultwarden_server.home / ".config"))
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
+    monkeypatch.setenv("BW_PASSWORD", vaultwarden_server.password)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_tcp)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
     if vaultwarden_server.ansible_vault_password_file:
@@ -448,6 +449,7 @@ def integration_env_unix(
     monkeypatch.setenv("HOME", str(vaultwarden_server.home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(vaultwarden_server.home / ".config"))
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
+    monkeypatch.setenv("BW_PASSWORD", vaultwarden_server.password)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_unix)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
     if vaultwarden_server.ansible_vault_password_file:

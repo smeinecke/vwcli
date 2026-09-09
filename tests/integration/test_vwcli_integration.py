@@ -22,6 +22,8 @@ def _run(client: Client, *args: str) -> int:
         return run(client, ["vwcli", *args])
     except (VwcliError, ValueError):
         return 1
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else 1
 
 
 def _parse_created_id(output: str) -> str:
@@ -302,6 +304,60 @@ def test_vwcli_negative_cases(integration_env, capsys: pytest.CaptureFixture[str
     assert rc == 1, "expected non-zero exit for delete of missing item"
 
 
+def test_vwcli_edge_cases(integration_env, capsys: pytest.CaptureFixture[str]) -> None:
+    """Exercise parser and command-level error paths."""
+    unique = f"vwcli-edge-{uuid.uuid4().hex[:8]}"
+
+    # create requires --name
+    rc = _run(Client(), "create", "--username", "u", "--password", "p")
+    assert rc != 0, "expected create without --name to fail"
+
+    # update/clone require --id or --search
+    rc = _run(Client(), "update", "--name", "foo")
+    assert rc != 0, "expected update without selector to fail"
+    rc = _run(Client(), "clone", "--name", "foo")
+    assert rc != 0, "expected clone without selector to fail"
+
+    # delete requires --id or --search
+    rc = _run(Client(), "delete", "--yes")
+    assert rc != 0, "expected delete without selector to fail"
+
+    # create two items with the same name; search should fail because not unique
+    rc = _run(Client(), "create", "--name", unique, "--username", "a", "--password", "p1")
+    assert rc == 0
+    rc = _run(Client(), "create", "--name", unique, "--username", "b", "--password", "p2")
+    assert rc == 0
+    time.sleep(0.3)
+    rc = _run(Client(), "update", "--search", unique, "--password", "x")
+    captured = capsys.readouterr()
+    assert rc == 1, f"expected update of non-unique {unique} to fail: {captured.out}"
+
+    # delete both via id
+    for _ in range(2):
+        items = _search_json(Client(), capsys, unique)
+        if items:
+            _run(Client(), "delete", "--id", items[0]["id"], "--yes")
+            time.sleep(0.3)
+
+    # search with no query and no uri filter
+    rc = _run(Client(), "search")
+    assert rc == 1, "expected bare search without query to fail"
+
+    # move without both collections
+    rc = _run(Client(), "move", "--from", "Source")
+    assert rc != 0, "expected move without --to to fail"
+
+    # attachment without selector
+    rc = _run(Client(), "attachment")
+    assert rc == 0, "expected bare attachment to list and print usage"
+
+    # collections without subcommand
+    rc = _run(Client(), "collections")
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Usage:" in captured.err or "Usage:" in captured.out
+
+
 def _extract_ansible_vault_blob(output: str) -> str:
     """Parse the YAML-ish output of `ansible-vault encrypt_string` and return the raw vault blob."""
     lines: list[str] = []
@@ -453,3 +509,167 @@ def test_vwcli_ansible_vault_clone(integration_env, vaultwarden_server, capsys: 
 
     _run(Client(), "delete", "--search", unique, "--yes")
     _run(Client(), "delete", "--search", f"{unique}-clone", "--yes")
+
+
+def test_vwcli_login(integration_env, capsys: pytest.CaptureFixture[str]) -> None:
+    """Call the login command non-interactively using BW_PASSWORD and verify a session is cached."""
+    rc = _run(Client(), "login")
+    captured = capsys.readouterr()
+    assert rc == 0, f"login failed: {captured.out} {captured.err}"
+    assert "BW_SESSION cached" in captured.out
+
+
+def test_vwcli_attachment_add_list_delete(integration_env, capsys: pytest.CaptureFixture[str]) -> None:
+    """Create an item, attach a file, list it, delete it, and verify it is gone."""
+    unique = f"vwcli-attach-{uuid.uuid4().hex[:8]}"
+    attach_file = integration_env / f"{unique}.txt"
+    attach_file.write_text("attachment payload", encoding="utf-8")
+
+    rc = _run(
+        Client(),
+        "create",
+        "--name",
+        unique,
+        "--username",
+        "user@example.com",
+        "--password",
+        "secret",
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    item_id = _parse_created_id(captured.out)
+    assert item_id
+
+    time.sleep(0.3)
+    rc = _run(Client(), "attachment", "add", "--id", item_id, "--file", str(attach_file))
+    captured = capsys.readouterr()
+    assert rc == 0, f"attachment add failed: {captured.out} {captured.err}"
+    assert "Attachment added" in captured.out
+
+    match = re.search(r"Attachment added to item .*\[([^\]]+)\]", captured.out)
+    assert match, f"Could not parse attachment id from: {captured.out!r}"
+    attachment_id = match.group(1)
+
+    time.sleep(0.3)
+    rc = _run(Client(), "attachment", "list", "--id", item_id, "--json")
+    captured = capsys.readouterr()
+    assert rc == 0, f"attachment list failed: {captured.err}"
+    attachments = json.loads(captured.out)
+    assert any(a.get("id") == attachment_id for a in attachments), attachments
+
+    rc = _run(Client(), "attachment", "delete", "--id", item_id, "--attachment-id", attachment_id)
+    captured = capsys.readouterr()
+    assert rc == 0, f"attachment delete failed: {captured.err}"
+    assert "deleted" in captured.out
+
+    time.sleep(0.3)
+    rc = _run(Client(), "attachment", "list", "--id", item_id, "--json")
+    captured = capsys.readouterr()
+    assert rc == 0
+    attachments = json.loads(captured.out)
+    assert not any(a.get("id") == attachment_id for a in attachments), attachments
+
+    _run(Client(), "delete", "--search", unique, "--yes")
+
+
+def _find_collection_id(name: str, output: str) -> str | None:
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1] == name:
+            return parts[0]
+    return None
+
+
+def test_vwcli_collections_lifecycle(integration_env, vaultwarden_server, capsys: pytest.CaptureFixture[str]) -> None:
+    """Cache, list, add, search, update and delete a collection."""
+    unique = f"vwcli-col-{uuid.uuid4().hex[:8]}"
+    renamed = f"{unique}-renamed"
+
+    rc = _run(Client(), "collections", "cache")
+    assert rc == 0, "collections cache failed"
+
+    time.sleep(0.3)
+    rc = _run(Client(), "collections", "list")
+    captured = capsys.readouterr()
+    assert rc == 0
+
+    rc = _run(Client(), "collections", "add", "--name", unique, "--organization-id", vaultwarden_server.org_id)
+    captured = capsys.readouterr()
+    assert rc == 0, f"collections add failed: {captured.out} {captured.err}"
+
+    time.sleep(0.3)
+    rc = _run(Client(), "collections", "list")
+    captured = capsys.readouterr()
+    assert rc == 0
+    col_id = _find_collection_id(unique, captured.out)
+    assert col_id, f"added collection {unique} not found in list output: {captured.out!r}"
+
+    rc = _run(Client(), "collections", "search", unique)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert unique in captured.out
+
+    time.sleep(0.3)
+    rc = _run(Client(), "collections", "update", "--id", col_id, "--name", renamed)
+    captured = capsys.readouterr()
+    assert rc == 0, f"collections update failed: {captured.err}"
+    assert "Updated collection" in captured.out
+
+    time.sleep(0.3)
+    rc = _run(Client(), "collections", "list")
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _find_collection_id(renamed, captured.out) == col_id
+
+    rc = _run(Client(), "collections", "delete", "--id", col_id, "--yes")
+    captured = capsys.readouterr()
+    assert rc == 0, f"collections delete failed: {captured.err}"
+    assert "Deleted collection" in captured.out
+
+    time.sleep(0.3)
+    rc = _run(Client(), "collections", "list")
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _find_collection_id(renamed, captured.out) is None
+
+
+def test_vwcli_collections_move(integration_env, vaultwarden_server, capsys: pytest.CaptureFixture[str]) -> None:
+    """Create a parent and child collection, then move the child under the parent."""
+    parent_name = f"vwcli-parent-{uuid.uuid4().hex[:8]}"
+    child_name = f"vwcli-child-{uuid.uuid4().hex[:8]}"
+
+    rc = _run(Client(), "collections", "add", "--name", parent_name, "--organization-id", vaultwarden_server.org_id)
+    captured = capsys.readouterr()
+    assert rc == 0, f"collections add parent failed: {captured.out} {captured.err}"
+
+    time.sleep(0.3)
+    rc = _run(Client(), "collections", "list")
+    captured = capsys.readouterr()
+    parent_id = _find_collection_id(parent_name, captured.out)
+    assert parent_id
+
+    rc = _run(Client(), "collections", "add", "--name", child_name, "--organization-id", vaultwarden_server.org_id)
+    captured = capsys.readouterr()
+    assert rc == 0, f"collections add child failed: {captured.out} {captured.err}"
+
+    time.sleep(0.3)
+    rc = _run(Client(), "collections", "list")
+    captured = capsys.readouterr()
+    child_id = _find_collection_id(child_name, captured.out)
+    assert child_id
+
+    rc = _run(Client(), "collections", "move", "--id", child_id, "--to-parent-id", parent_id)
+    captured = capsys.readouterr()
+    assert rc == 0, f"collections move failed: {captured.err}"
+    assert "Moved collection" in captured.out
+
+    time.sleep(0.3)
+    client = Client()
+    current = client.bw_get_collection(child_id)
+    data = current.get("data", {}) if isinstance(current, dict) else {}
+    assert data.get("id") == child_id
+
+    rc = _run(Client(), "collections", "delete", "--id", child_id, "--yes")
+    assert rc == 0
+    rc = _run(Client(), "collections", "delete", "--id", parent_id, "--yes")
+    assert rc == 0
