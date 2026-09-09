@@ -27,7 +27,10 @@ env/
 ENV/
 
 # uv
-uv.lock
+# It is generally recommended to include uv.lock for applications (see
+# https://docs.astral.sh/uv/concepts/lock-files/). For libraries it can be
+# ignored. vwcli is an application, so keep uv.lock in version control.
+# uv.lock
 
 # Testing / coverage
 .pytest_cache/

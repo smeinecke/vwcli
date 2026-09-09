@@ -3,33 +3,28 @@ from __future__ import annotations
 import argparse
 import atexit
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 from .client import Client
 from .exceptions import VwcliError
 
-
-KNOWN_COMMANDS = frozenset(
-    {
-        "help",
-        "login",
-        "create",
-        "update",
-        "clone",
-        "search",
-        "delete",
-        "move",
-        "attachment",
-        "collections",
-        "cache-collections",
-    }
-)
+KNOWN_COMMANDS = frozenset({
+    "help",
+    "login",
+    "create",
+    "update",
+    "clone",
+    "search",
+    "delete",
+    "move",
+    "attachment",
+    "collections",
+    "cache-collections",
+})
 
 
 def build_parser() -> argparse.ArgumentParser:
-    def add_update_options(
-        p: argparse.ArgumentParser, *, include_clone_flag: bool, force_clone: bool
-    ) -> None:
+    def add_update_options(p: argparse.ArgumentParser, *, include_clone_flag: bool, force_clone: bool) -> None:
         sel = p.add_mutually_exclusive_group(required=True)
         sel.add_argument("--id", default="", metavar="VALUE", help="Exact item ID")
         sel.add_argument(
@@ -49,9 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
             help="Auto-generate a secure password (printed to stdout after update)",
         )
         p.add_argument("--notes", default="", metavar="VALUE")
-        p.add_argument(
-            "--organization-id", dest="organization_id", default="", metavar="VALUE"
-        )
+        p.add_argument("--organization-id", dest="organization_id", default="", metavar="VALUE")
         p.add_argument(
             "--uri",
             dest="uris",
@@ -121,9 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("help", help="Show this help")
-    sub.add_parser(
-        "login", help="Unlock vault and cache BW_SESSION to ~/.config/vwcli/config"
-    )
+    sub.add_parser("login", help="Unlock vault and cache BW_SESSION to ~/.config/vwcli/config")
 
     p_create = sub.add_parser("create", help="Create a new login item")
     p_create.add_argument("--name", required=True, metavar="VALUE")
@@ -137,9 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Auto-generate a secure password (printed to stdout after creation)",
     )
     p_create.add_argument("--notes", default=None, metavar="VALUE")
-    p_create.add_argument(
-        "--organization-id", dest="organization_id", default="", metavar="VALUE"
-    )
+    p_create.add_argument("--organization-id", dest="organization_id", default="", metavar="VALUE")
     p_create.add_argument(
         "--uri",
         dest="uris",
@@ -173,9 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print JSON that would be sent, do not modify vault",
     )
 
-    p_update = sub.add_parser(
-        "update", help="Update an existing item, or clone and update the clone"
-    )
+    p_update = sub.add_parser("update", help="Update an existing item, or clone and update the clone")
     add_update_options(p_update, include_clone_flag=True, force_clone=False)
 
     p_clone = sub.add_parser("clone", help="Alias for: update --clone")
@@ -190,9 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         help="Filter results to items whose URI list contains this URL (substring match)",
     )
-    p_search.add_argument(
-        "--json", dest="output_json", action="store_true", help="Print raw JSON"
-    )
+    p_search.add_argument("--json", dest="output_json", action="store_true", help="Print raw JSON")
     p_search.add_argument(
         "--limit",
         type=int,
@@ -216,13 +201,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VALUE",
         help="Search string (must resolve to exactly one item)",
     )
-    p_delete.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
-    )
+    p_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
-    p_move = sub.add_parser(
-        "move", help="Bulk move items from one collection to another"
-    )
+    p_move = sub.add_parser("move", help="Bulk move items from one collection to another")
     p_move.add_argument(
         "--from",
         dest="from_collection",
@@ -255,9 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List items that would be moved without making changes",
     )
-    p_move.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
-    )
+    p_move.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
     p_col = sub.add_parser("collections", help="Manage collections")
     col_sub = p_col.add_subparsers(dest="collections_command")
@@ -276,9 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_col_add = col_sub.add_parser("add", help="Create a new collection")
-    p_col_add.add_argument(
-        "--name", required=True, metavar="VALUE", help="Collection name"
-    )
+    p_col_add.add_argument("--name", required=True, metavar="VALUE", help="Collection name")
     p_col_add.add_argument(
         "--organization-id",
         dest="organization_id",
@@ -294,22 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parent collection ID for nesting",
     )
 
-    p_col_search = col_sub.add_parser(
-        "search", help="Search collections in local cache"
-    )
-    p_col_search.add_argument(
-        "query", nargs="+", metavar="QUERY", help="Substring to match against collection full paths"
-    )
+    p_col_search = col_sub.add_parser("search", help="Search collections in local cache")
+    p_col_search.add_argument("query", nargs="+", metavar="QUERY", help="Substring to match against collection full paths")
 
-    p_col_upd = col_sub.add_parser(
-        "update", help="Update a collection (rename or change parent)"
-    )
-    p_col_upd.add_argument(
-        "--id", required=True, metavar="VALUE", help="Collection ID"
-    )
-    p_col_upd.add_argument(
-        "--name", required=True, metavar="VALUE", help="New collection name"
-    )
+    p_col_upd = col_sub.add_parser("update", help="Update a collection (rename or change parent)")
+    p_col_upd.add_argument("--id", required=True, metavar="VALUE", help="Collection ID")
+    p_col_upd.add_argument("--name", required=True, metavar="VALUE", help="New collection name")
     p_col_upd.add_argument(
         "--parent-id",
         dest="parent_id",
@@ -319,9 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_col_del = col_sub.add_parser("delete", help="Delete a collection")
-    p_col_del.add_argument(
-        "--id", required=True, metavar="VALUE", help="Collection ID"
-    )
+    p_col_del.add_argument("--id", required=True, metavar="VALUE", help="Collection ID")
     p_col_del.add_argument(
         "--organization-id",
         dest="organization_id",
@@ -329,16 +294,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VALUE",
         help="Organization ID (required for some backends)",
     )
-    p_col_del.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
-    )
+    p_col_del.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
-    p_col_move = col_sub.add_parser(
-        "move", help="Move a collection under a different parent"
-    )
-    p_col_move.add_argument(
-        "--id", required=True, metavar="VALUE", help="Collection ID"
-    )
+    p_col_move = col_sub.add_parser("move", help="Move a collection under a different parent")
+    p_col_move.add_argument("--id", required=True, metavar="VALUE", help="Collection ID")
     p_col_move.add_argument(
         "--to-parent-id",
         dest="to_parent_id",
@@ -369,9 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     att_sub = p_att.add_subparsers(dest="attachment_command")
 
-    p_att_show = att_sub.add_parser(
-        "list", help="List attachments for an item (default)"
-    )
+    p_att_show = att_sub.add_parser("list", help="List attachments for an item (default)")
     att_show_sel = p_att_show.add_mutually_exclusive_group(required=True)
     att_show_sel.add_argument("--id", default="", metavar="VALUE", help="Item ID")
     att_show_sel.add_argument(
@@ -380,9 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VALUE",
         help="Search string (must resolve to one item)",
     )
-    p_att_show.add_argument(
-        "--json", dest="output_json", action="store_true", help="Print raw JSON"
-    )
+    p_att_show.add_argument("--json", dest="output_json", action="store_true", help="Print raw JSON")
 
     p_att_add = att_sub.add_parser("add", help="Upload a file as an attachment")
     att_add_sel = p_att_add.add_mutually_exclusive_group(required=True)
@@ -393,13 +348,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VALUE",
         help="Search string (must resolve to one item)",
     )
-    p_att_add.add_argument(
-        "--file", required=True, metavar="PATH", help="Path to file to upload"
-    )
+    p_att_add.add_argument("--file", required=True, metavar="PATH", help="Path to file to upload")
 
-    p_att_del = att_sub.add_parser(
-        "delete", help="Delete an attachment from an item"
-    )
+    p_att_del = att_sub.add_parser("delete", help="Delete an attachment from an item")
     att_del_sel = p_att_del.add_mutually_exclusive_group(required=True)
     att_del_sel.add_argument("--id", default="", metavar="VALUE", help="Item ID")
     att_del_sel.add_argument(
@@ -417,6 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
 
 def run(client: Client, argv: list[str]) -> int:
     args = argv[1:]
@@ -457,7 +409,6 @@ def run(client: Client, argv: list[str]) -> int:
     else:
         cmd_func(ns)
     return 0
-
 
 
 def main() -> int:

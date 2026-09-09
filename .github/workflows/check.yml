@@ -1,0 +1,70 @@
+name: Code Checks
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit Tests & Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Cache uv
+        id: cache-uv
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.cache/pip
+          key: uv-cache-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            uv-cache-
+
+      - name: Set up Python environment
+        run: |
+          wget -qO- https://astral.sh/uv/install.sh | sh
+          uv sync
+
+      - name: Run Ruff (PEP 8 Formatting)
+        run: |
+          uv run make format
+
+      - name: Run Ruff (Linting + Docstrings)
+        run: |
+          uv run make check
+
+      - name: Run vulture (Dead Code)
+        run: |
+          uv run make vulture
+
+      - name: Run xenon (Cyclomatic Complexity)
+        run: |
+          uv run make xenon
+
+      - name: Run bandit (Security)
+        run: |
+          uv run make bandit
+
+      - name: Run pyright (Type Checking)
+        run: |
+          uv run make pyright
+
+      - name: Run pytest (Unit Tests)
+        run: |
+          uv run pytest tests -v --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: ./coverage.xml

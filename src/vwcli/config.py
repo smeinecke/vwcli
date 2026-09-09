@@ -1,27 +1,25 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 from pathlib import Path
 from typing import Any
 
-from .constants import CACHE_DIR, COLLECTION_CACHE, CONFIG_DIR, CONFIG_FILE
+from . import constants
 
 
 def safe_chmod(path: Path, mode: int) -> None:
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(path, mode)
-    except OSError:
-        pass
-
 
 
 class Config:
     def __init__(self) -> None:
-        self.config_dir = CONFIG_DIR
-        self.config_file = CONFIG_FILE
-        self.cache_dir = CACHE_DIR
-        self.collection_cache = COLLECTION_CACHE
+        self.config_dir = constants.CONFIG_DIR
+        self.config_file = constants.CONFIG_FILE
+        self.cache_dir = constants.CACHE_DIR
+        self.collection_cache = constants.COLLECTION_CACHE
         self.migrate()
 
     @staticmethod
@@ -48,10 +46,8 @@ class Config:
                 client.bw_session = value
                 os.environ["BW_SESSION"] = value
             elif key == "BW_SESSION_EXPIRES" and not client.bw_session_expires and value:
-                try:
+                with contextlib.suppress(ValueError):
                     client.bw_session_expires = int(value)
-                except ValueError:
-                    pass
             elif key == "BW_SERVE_URL" and not client.bw_serve_url and value:
                 client.bw_serve_url = value
 

@@ -45,14 +45,15 @@ preview = true
 [tool.ruff.lint]
 preview = true
 explicit-preview-rules = true
-extend-select = [
-    "ANN",
-    "UP",
-    "UP042",
+select = [
+    "E",
+    "F",
     "I",
+    "UP",
+    "C4",
+    "SIM",
 ]
-select = ["E9", "F82", "D"]
-ignore = ["D203", "D213", "D100", "F821"]
+ignore = ["D", "ANN", "F821"]
 
 [tool.pytest.ini_options]
 addopts = [
@@ -68,6 +69,8 @@ exclude = ["**/__pycache__", "**/node_modules", "**/dist", "**/build", "**/venv"
 
 [tool.bandit]
 exclude_dirs = [".venv", "tests"]
+# Common false positives for a CLI that drives the bw binary and systemd.
+skips = ["B310", "B404", "B603", "B607"]
 
 [tool.vulture]
 exclude = ["dist", "build", "venv", ".venv", "tests"]
