@@ -8,6 +8,31 @@ const SOCKET_PATH =
   process.env.BW_SERVE_SOCKET ||
   `/run/user/${process.getuid()}/bw.sock`;
 
+// The current Bitwarden CLI validates the HTTP Host header against the
+// configured hostname/port. When listening on a Unix socket the hostname is
+// meaningless, but a bare "Host: localhost" header (which Python's
+// http.client.HTTPConnection sends by default) must still be accepted.
+// Force "localhost" and the default HTTP port (80) so the socket service
+// works without requiring every client to include a port in the Host header.
+const serveIdx = process.argv.indexOf("serve");
+if (serveIdx !== -1) {
+  const cleanArgs = [];
+  let skipNext = false;
+  for (let i = 0; i < process.argv.length; i++) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    if (process.argv[i] === "--hostname" || process.argv[i] === "--port") {
+      skipNext = true;
+      continue;
+    }
+    cleanArgs.push(process.argv[i]);
+  }
+  cleanArgs.splice(serveIdx + 1, 0, "--hostname", "localhost", "--port", "80");
+  process.argv = cleanArgs;
+}
+
 function ensureParentDir(socketPath) {
   fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
 }
