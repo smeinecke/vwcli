@@ -11,8 +11,8 @@ LOCAL_BIN_DIR="$HOME/.local/bin"
 LOCAL_LIB_DIR="$HOME/.local/lib"
 ENV_FILE="$USER_SYSTEMD_DIR/bitwarden-cli.env"
 REPO_VAULT_PASS_FILE="$SCRIPT_DIR/../../.vault_pass.txt"
-PWS_CONFIG_DIR="$XDG_CONFIG/pws"
-PWS_CONFIG_FILE="$PWS_CONFIG_DIR/config"
+VWCLI_CONFIG_DIR="$XDG_CONFIG/vwcli"
+VWCLI_CONFIG_FILE="$VWCLI_CONFIG_DIR/config"
 
 NVM_VERSION="v0.40.3"
 BW_SERVE_SOCKET="/run/user/$(id -u)/bw.sock"
@@ -176,16 +176,16 @@ ensure_bw_server_url() {
   (umask 077; printf 'BW_SERVER_URL=%q\n' "$BW_SERVER_URL" >> "$ENV_FILE")
 }
 
-ensure_bw_session_from_pws_config() {
+ensure_bw_session_from_vwcli_config() {
   grep -q '^BW_SESSION=' "$ENV_FILE" 2>/dev/null && return 0
-  [[ -f "$PWS_CONFIG_FILE" ]] || return 0
+  [[ -f "$VWCLI_CONFIG_FILE" ]] || return 0
 
-  local pws_session
-  pws_session="$(awk '/^BW_SESSION=/{print substr($0, index($0,"=")+1); exit}' "$PWS_CONFIG_FILE")"
-  [[ -n "$pws_session" ]] || return 0
+  local vwcli_session
+  vwcli_session="$(awk '/^BW_SESSION=/{print substr($0, index($0,"=")+1); exit}' "$VWCLI_CONFIG_FILE")"
+  [[ -n "$vwcli_session" ]] || return 0
 
-  (umask 077; printf 'BW_SESSION=%q\n' "$pws_session" >> "$ENV_FILE")
-  echo "Recovered BW_SESSION from $PWS_CONFIG_FILE into $ENV_FILE"
+  (umask 077; printf 'BW_SESSION=%q\n' "$vwcli_session" >> "$ENV_FILE")
+  echo "Recovered BW_SESSION from $VWCLI_CONFIG_FILE into $ENV_FILE"
 }
 
 # Install steps
@@ -268,12 +268,12 @@ setup_env_file() {
     ensure_export_password
   fi
   ensure_bw_server_url
-  ensure_bw_session_from_pws_config
+  ensure_bw_session_from_vwcli_config
 }
 
-setup_pws_config() {
-  set_config_value "$PWS_CONFIG_FILE" "BW_SERVE_URL" "unix://${BW_SERVE_SOCKET}"
-  echo "BW_SERVE_URL set in: $PWS_CONFIG_FILE"
+setup_vwcli_config() {
+  set_config_value "$VWCLI_CONFIG_FILE" "BW_SERVE_URL" "unix://${BW_SERVE_SOCKET}"
+  echo "BW_SERVE_URL set in: $VWCLI_CONFIG_FILE"
 }
 
 start_units() {
@@ -298,6 +298,6 @@ check_sources
 stop_units
 install_files
 setup_env_file
-setup_pws_config
+setup_vwcli_config
 install_vpn_hook
 start_units

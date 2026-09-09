@@ -82,7 +82,7 @@ BW_SERVER_URL=<vaultwarden base URL, e.g. https://vault.example.com>
 ```
 
 - `BW_SESSION` is consumed by `bw serve` and `bw export`.
-- `BW_SESSION_EXPIRES` is written by the installer and by `pws login`; `pws` reads it to detect expiry and auto-renew before it hits the service.
+- `BW_SESSION_EXPIRES` is written by the installer and by `vwcli login`; `vwcli` reads it to detect expiry and auto-renew before it hits the service.
 - `BW_EXPORT_PASSWORD` is consumed only by `bitwarden-backup.sh` (needed only when backup is installed).
 - `BW_SERVER_URL` is consumed by `start-bw-serve.sh` and `bitwarden-backup.sh` for DNS and endpoint reachability checks. The hostname is derived from the URL at runtime.
 
@@ -107,24 +107,24 @@ systemctl --user restart bitwarden-cli.service
 
 `BW_SESSION` tokens are backed by Vaultwarden's idle refresh token, which defaults to 30 days. A conservative TTL of 29 days is used here.
 
-### Automatic renewal via `pws`
+### Automatic renewal via `vwcli`
 
-The installer records `BW_SESSION_EXPIRES` (Unix timestamp) in both the pws config and the systemd env file. Before each `pws` operation, `ensure_session` checks expiry and attempts a silent `bw unlock --raw`. On success it:
+The installer records `BW_SESSION_EXPIRES` (Unix timestamp) in both the vwcli config and the systemd env file. Before each `vwcli` operation, `ensure_session` checks expiry and attempts a silent `bw unlock --raw`. On success it:
 
-1. Updates `~/.config/pws/config` (`BW_SESSION` + `BW_SESSION_EXPIRES`).
+1. Updates `~/.config/vwcli/config` (`BW_SESSION` + `BW_SESSION_EXPIRES`).
 2. Updates `~/.config/systemd/user/bitwarden-cli.env` with the new token.
 3. Restarts `bitwarden-cli.service` so the running daemon uses the fresh token.
 
-The silent re-unlock works as long as the vault master password is held in the kernel keyring (i.e. the user session is still active). If it fails, `pws` prompts to run `pws login` interactively.
+The silent re-unlock works as long as the vault master password is held in the kernel keyring (i.e. the user session is still active). If it fails, `vwcli` prompts to run `vwcli login` interactively.
 
-`pws login` always does a full unlock and propagates the token to both files + restarts the service.
+`vwcli login` always does a full unlock and propagates the token to both files + restarts the service.
 
 The TTL can be tuned via the `BW_SESSION_TTL_SECONDS` environment variable (default: `2505600`).
 
 ### Manual renewal (fallback)
 
 ```bash
-pws login
+vwcli login
 ```
 
 ## Service lifecycle
@@ -173,6 +173,6 @@ SOCK="/run/user/$(id -u)/bw.sock"
 curl -s --unix-socket "$SOCK" http://localhost/status | jq .
 ```
 
-## pws integration
+## vwcli integration
 
-The installer automatically writes `BW_SERVE_URL=unix:///run/user/<uid>/bw.sock` to `~/.config/pws/config`. `pws` parses the `unix://` scheme and connects via the domain socket instead of TCP - no manual configuration is needed.
+The installer automatically writes `BW_SERVE_URL=unix:///run/user/<uid>/bw.sock` to `~/.config/vwcli/config`. `vwcli` parses the `unix://` scheme and connects via the domain socket instead of TCP - no manual configuration is needed.

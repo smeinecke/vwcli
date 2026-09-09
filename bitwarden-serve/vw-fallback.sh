@@ -416,7 +416,7 @@ up_local() {
   import_backup "$import_file"
 
   echo "Local fallback is active at $BASE_URL"
-  echo "pws now targets local Vaultwarden via updated config."
+  echo "vwcli now targets local Vaultwarden via updated config."
 }
 
 usage() {

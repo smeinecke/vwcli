@@ -264,7 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     col_sub.add_parser(
         "cache",
-        help="Refresh local collection cache (~/.cache/bw-cli/collections.json)",
+        help="Refresh local collection cache (~/.cache/vwcli/collections.json)",
     )
 
     p_col_list = col_sub.add_parser("list", help="List collections")

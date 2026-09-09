@@ -1,0 +1,78 @@
+[project]
+name = "vwcli"
+version = "0.1.0"
+description = "Bitwarden/Vaultwarden CLI wrapper"
+readme = {text = "Bitwarden/Vaultwarden CLI wrapper", content-type = "text/plain"}
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+vwcli = "vwcli.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.15.10",
+    "pyright>=1.1.408",
+    "vulture>=2.16",
+    "xenon>=0.9.3",
+    "bandit>=1.9.2",
+    "pre-commit>=4.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vwcli"]
+
+[tool.ruff]
+exclude = ["docs", "tests"]
+line-length = 160
+indent-width = 4
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+preview = true
+
+[tool.ruff.lint]
+preview = true
+explicit-preview-rules = true
+extend-select = [
+    "ANN",
+    "UP",
+    "UP042",
+    "I",
+]
+select = ["E9", "F82", "D"]
+ignore = ["D203", "D213", "D100", "F821"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
+pythonpath = ["."]
+testpaths = [
+    "tests",
+]
+
+[tool.pyright]
+exclude = ["**/__pycache__", "**/node_modules", "**/dist", "**/build", "**/venv", "**/.venv"]
+
+[tool.bandit]
+exclude_dirs = [".venv", "tests"]
+
+[tool.vulture]
+exclude = ["dist", "build", "venv", ".venv", "tests"]
+ignore_decorators = ["@app.route", "@require_*"]
+ignore_names = ["visit_*", "do_*"]
+min_confidence = 80
+paths = ["."]
+sort_by_size = true
