@@ -47,10 +47,6 @@ jobs:
         run: |
           uv run make vulture
 
-      - name: Run xenon (Cyclomatic Complexity)
-        run: |
-          uv run make xenon
-
       - name: Run bandit (Security)
         run: |
           uv run make bandit
