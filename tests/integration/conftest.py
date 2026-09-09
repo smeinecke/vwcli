@@ -4,7 +4,9 @@ import base64
 import dataclasses
 import hashlib
 import http.client
+import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -20,7 +22,14 @@ from urllib3.util.retry import Retry
 
 from vaultwarden.models.bitwarden import Kdf
 from vaultwarden.models.enum import KdfType
-from vaultwarden.utils.crypto import make_asym_key, make_master_key, make_sym_key
+from vaultwarden.utils.crypto import (
+    encrypt_asym,
+    encrypt_sym,
+    make_asym_key,
+    make_master_key,
+    make_sym_key,
+    token_bytes,
+)
 
 
 @dataclasses.dataclass
@@ -34,6 +43,9 @@ class VaultwardenServer:
     home: Path
     tls_dir: Path
     serve_procs: list[subprocess.Popen[str]] = dataclasses.field(default_factory=list)
+    org_id: str = ""
+    source_collection_id: str = ""
+    target_collection_id: str = ""
 
 
 TEST_EMAIL = "integration-test@example.com"
@@ -81,6 +93,84 @@ def _generate_certs(tls_dir: Path) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _bw_access_token_and_uuid(home: Path) -> tuple[str, str]:
+    """Read the Bitwarden CLI access token and user UUID from its data file."""
+    data_file = home / ".config" / "Bitwarden CLI" / "data.json"
+    data = json.loads(data_file.read_text(encoding="utf-8"))
+    token_key = next(k for k in data if k.endswith("_token_accessToken"))
+    match = re.match(r"user_(.+?)_token_accessToken", token_key)
+    if not match:
+        raise RuntimeError(f"Could not parse user UUID from token key {token_key!r}")
+    user_uuid = match.group(1)
+    return str(data[token_key]), user_uuid
+
+
+def _create_organization_and_collections(server: VaultwardenServer) -> None:
+    """Provision a test organization with Source and Target collections."""
+    env = os.environ.copy()
+    env["HOME"] = str(server.home)
+    env["BW_SESSION"] = server.session
+    env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+
+    access_token, user_uuid = _bw_access_token_and_uuid(server.home)
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    # Fetch the user's RSA public key so we can encrypt the org symmetric key.
+    resp = requests.get(f"{server.url}/api/users/{user_uuid}/public-key", headers=headers, verify=False)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Could not fetch user public key: {resp.status_code} {resp.text}")
+    user_public_key_b64 = resp.json()["publicKey"]
+    user_public_key_der = base64.b64decode(user_public_key_b64)
+
+    # Org symmetric key (64 bytes) and RSA key pair.
+    org_key = token_bytes(64)
+    encrypted_org_private_key, org_public_key, _ = make_asym_key(org_key)
+    encrypted_org_key = encrypt_asym(org_key, user_public_key_der)
+
+    org_payload = {
+        "name": "Test Org",
+        "billingEmail": server.email,
+        "collectionName": encrypt_sym("Source", org_key),
+        "key": encrypted_org_key,
+        "keys": {
+            "encryptedPrivateKey": encrypted_org_private_key,
+            "publicKey": base64.b64encode(org_public_key).decode(),
+        },
+        "planType": "0",
+    }
+    resp = requests.post(f"{server.url}/api/organizations", json=org_payload, headers=headers, verify=False)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Could not create organization: {resp.status_code} {resp.text[:500]}")
+    org_id = resp.json()["id"]
+    server.org_id = str(org_id)
+
+    # Create the second collection using the same org key.
+    target_name = encrypt_sym("Target", org_key)
+    target_resp = requests.post(
+        f"{server.url}/api/organizations/{org_id}/collections",
+        json={"name": target_name, "groups": [], "users": []},
+        headers=headers,
+        verify=False,
+    )
+    if target_resp.status_code != 200:
+        raise RuntimeError(f"Could not create Target collection: {target_resp.status_code} {target_resp.text[:500]}")
+    server.target_collection_id = str(target_resp.json()["id"])
+
+    # Sync the CLI state so bw sees the new organization and collections.
+    sync = subprocess.run(["bw", "sync"], env=env, capture_output=True, text=True)
+    if sync.returncode != 0:
+        raise RuntimeError(f"bw sync failed: {sync.stderr}")
+
+    run = subprocess.run(["bw", "list", "org-collections", "--organizationid", server.org_id], env=env, capture_output=True, text=True)
+    if run.returncode != 0:
+        raise RuntimeError(f"bw list org-collections failed: {run.stderr}")
+    for col in json.loads(run.stdout):
+        if col.get("name") == "Source":
+            server.source_collection_id = str(col.get("id"))
+    if not server.source_collection_id or not server.target_collection_id:
+        raise RuntimeError("Could not resolve Source or Target collection ids")
 
 
 def _wait_for_vaultwarden(url: str, timeout: float = 60.0) -> None:
@@ -262,6 +352,7 @@ def vaultwarden_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[Va
     session = _bw_login(url, TEST_EMAIL, TEST_PASSWORD, home)
 
     server = VaultwardenServer(url=url, email=TEST_EMAIL, password=TEST_PASSWORD, session=session, home=home, tls_dir=tls_dir)
+    _create_organization_and_collections(server)
     yield server
 
     for proc in server.serve_procs:
@@ -307,6 +398,25 @@ def integration_env(
     monkeypatch.setenv("HOME", str(vaultwarden_server.home))
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_tcp)
+    monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
+    return vaultwarden_server.home
+
+
+@pytest.fixture(params=["tcp", "unix"])
+def integration_env_both(
+    request: pytest.FixtureRequest,
+    vaultwarden_server: VaultwardenServer,
+    bw_serve_url_tcp: str,
+    bw_serve_url_unix: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Run the test once against the TCP serve and once against the Unix socket serve."""
+    monkeypatch.setenv("HOME", str(vaultwarden_server.home))
+    monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
+    if request.param == "unix":
+        monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_unix)
+    else:
+        monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_tcp)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
     return vaultwarden_server.home
 
