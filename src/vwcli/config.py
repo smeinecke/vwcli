@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,7 @@ class Config:
         self.config_file = constants.CONFIG_FILE
         self.cache_dir = constants.CACHE_DIR
         self.collection_cache = constants.COLLECTION_CACHE
-        self.migrate()
+        self.ensure_dir()
 
     @staticmethod
     def _ensure_secure_dir(path: Path) -> None:
@@ -77,24 +76,3 @@ class Config:
 
     def ensure_cache_dir(self) -> None:
         self._ensure_secure_dir(self.cache_dir)
-
-    def migrate(self) -> None:
-        """Copy data from old pws / bw-cli paths into new vwcli paths."""
-        old_config_dir = Path.home() / ".config" / "pws"
-        old_config_file = old_config_dir / "config"
-        old_cache_dir = Path.home() / ".cache" / "bw-cli"
-
-        if old_config_file.exists() and not self.config_file.exists():
-            self.ensure_dir()
-            self.config_file.write_text(old_config_file.read_text(encoding="utf-8"), encoding="utf-8")
-            safe_chmod(self.config_file, 0o600)
-
-        if old_cache_dir.exists() and not self.cache_dir.exists():
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            for src in old_cache_dir.iterdir():
-                if src.is_file():
-                    dst = self.cache_dir / src.name
-                    if not dst.exists():
-                        shutil.copy2(src, dst)
-                        safe_chmod(dst, 0o600)
-            safe_chmod(self.cache_dir, 0o700)

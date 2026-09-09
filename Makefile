@@ -40,6 +40,6 @@ bandit:
 pyright:
 	uv run pyright
 
-# Validate the code (format + check + security + type check + dead code)
-validate: format check bandit pyright vulture
+# Validate the code (format + check + security + type check + dead code + complexity)
+validate: format check bandit pyright vulture xenon
 	@echo "Validation passed. Your code is ready to push."

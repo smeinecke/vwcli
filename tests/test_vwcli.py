@@ -1,5 +1,4 @@
 import argparse
-import json
 from pathlib import Path
 
 import pytest
@@ -61,24 +60,6 @@ def test_config_set_and_load(tmp_path: Path, monkeypatch) -> None:
     cfg.load(dummy)
     assert dummy.bw_session == "test-token"
     assert cfg.config_file.read_text() == "BW_SESSION=test-token\n"
-
-
-def test_config_migrates_old_paths(tmp_path: Path, monkeypatch) -> None:
-    _patch_constants(monkeypatch, tmp_path)
-    old_config_dir = tmp_path / ".config" / "pws"
-    old_config_file = old_config_dir / "config"
-    old_cache_dir = tmp_path / ".cache" / "bw-cli"
-    old_config_dir.mkdir(parents=True)
-    old_cache_dir.mkdir(parents=True)
-    old_config_file.write_text("BW_SESSION=old-token\n", encoding="utf-8")
-    (old_cache_dir / "collections.json").write_text(
-        json.dumps({"data": []}), encoding="utf-8"
-    )
-
-    cfg = config.Config()
-    assert cfg.config_file.exists()
-    assert cfg.config_file.read_text() == "BW_SESSION=old-token\n"
-    assert cfg.collection_cache.exists()
 
 
 def test_build_parser_prog() -> None:

@@ -32,7 +32,7 @@ from .constants import (
     parse_uri,
 )
 from .exceptions import VwcliError
-from .output import Console, Table
+from .output import Console, Table, item_group_label, render_search_results
 
 
 class _UnixSocketHTTPConnection(http.client.HTTPConnection):
@@ -175,15 +175,6 @@ class Client:
         return data
 
     def ensure_session(self) -> None:
-        # Migrate session token from old bash cache file if present
-        session_cache = self.config.cache_dir / "session"
-        if not self.bw_session and session_cache.exists():
-            migrated = session_cache.read_text(encoding="utf-8").strip()
-            if migrated:
-                self.bw_session = migrated
-                os.environ["BW_SESSION"] = migrated
-                self.config.set("BW_SESSION", migrated)
-
         if not self.bw_session:
             raise VwcliError(f"BW_SESSION is not set. Run: {sys.argv[0]} login")
 
@@ -1033,67 +1024,65 @@ class Client:
             self.assign_collection_to_item(str(item_id), ns.collection)
             print(f"Assigned collection: {ns.collection}")
 
-    def cmd_update(self, ns: argparse.Namespace) -> None:
-        self.ensure_session()
-        if ns.refresh_cache:
-            self.refresh_collections_cache()
+    def _prepare_update_target(
+        self,
+        ns: argparse.Namespace,
+        current_json: dict[str, Any],
+        vault_org_id: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Return the target ID and JSON for an update or clone operation."""
+        if not ns.clone:
+            return str(current_json.get("id") or ""), copy.deepcopy(current_json)
 
-        password = ns.password
-        if ns.generate_password:
-            password = self.bw_generate_password()
+        clone_payload = self.build_clone_payload(current_json)
+        if ns.name:
+            clone_payload["name"] = ns.name
+        if ns.organization_id:
+            clone_payload = self.set_organization_id(clone_payload, ns.organization_id)
+        if vault_org_id:
+            clone_payload = self.set_organization_id(clone_payload, vault_org_id)
 
-        item_id = ns.id or self.find_item_id_by_search(ns.search)
-        current_json = self.bw_get_item(item_id)
-        target_id = item_id
-
-        vault_org_id = self.resolve_vault_to_org_id(ns.vault) if ns.vault else ""
-
-        if ns.clone:
-            clone_payload = self.build_clone_payload(current_json)
-            if ns.name:
-                clone_payload["name"] = ns.name
-            if ns.organization_id:
-                clone_payload = self.set_organization_id(clone_payload, ns.organization_id)
-            if vault_org_id:
-                clone_payload = self.set_organization_id(clone_payload, vault_org_id)
-            target_org_id = str(vault_org_id or ns.organization_id or "")
-            source_org_id = str(current_json.get("organizationId") or "")
-            if target_org_id and target_org_id != source_org_id:
-                # Collection and folder IDs are scoped to a single vault, so
-                # the source item's values are invalid for the target vault.
-                # Rebuild the collection assignment for the target vault.
-                clone_payload.pop("folderId", None)
-                if ns.collection:
-                    col_json = self.resolve_collection_by_name(ns.collection)
-                    col_id = col_json.get("id")
-                    if not col_id:
-                        raise VwcliError(f"Collection '{ns.collection}' has no id; cannot assign.")
-                    col_org = str(col_json.get("organizationId") or "")
-                    if col_org and vault_org_id and col_org != str(vault_org_id):
-                        raise VwcliError(
-                            f"Vault '{ns.vault}' (org {vault_org_id}) and collection '{ns.collection}' (org {col_org}) are in different organizations"
-                        )
-                    if col_org:
-                        clone_payload = self.set_organization_id(clone_payload, col_org)
-                        target_org_id = col_org
-                    clone_payload["collectionIds"] = [str(col_id)]
-                else:
-                    clone_payload.pop("collectionIds", None)
-
-            if ns.dry_run:
-                target_json: dict[str, Any] = clone_payload
-                target_id = "<clone-id>"
+        target_org_id = str(vault_org_id or ns.organization_id or "")
+        source_org_id = str(current_json.get("organizationId") or "")
+        if target_org_id and target_org_id != source_org_id:
+            # Collection and folder IDs are scoped to a single vault, so
+            # the source item's values are invalid for the target vault.
+            # Rebuild the collection assignment for the target vault.
+            clone_payload.pop("folderId", None)
+            if ns.collection:
+                col_json = self.resolve_collection_by_name(ns.collection)
+                col_id = col_json.get("id")
+                if not col_id:
+                    raise VwcliError(f"Collection '{ns.collection}' has no id; cannot assign.")
+                col_org = str(col_json.get("organizationId") or "")
+                if col_org and vault_org_id and col_org != str(vault_org_id):
+                    raise VwcliError(f"Vault '{ns.vault}' (org {vault_org_id}) and collection '{ns.collection}' (org {col_org}) are in different organizations")
+                if col_org:
+                    clone_payload = self.set_organization_id(clone_payload, col_org)
+                    target_org_id = col_org
+                clone_payload["collectionIds"] = [str(col_id)]
             else:
-                created_clone = self.bw_create_item(clone_payload)
-                clone_id = created_clone.get("id")
-                if not clone_id:
-                    raise VwcliError("Clone creation succeeded but clone ID was not returned")
-                target_id = str(clone_id)
-                target_json = created_clone
-                print(f"Cloned item [{item_id}] -> [{clone_id}]")
-        else:
-            target_json = copy.deepcopy(current_json)
+                clone_payload.pop("collectionIds", None)
 
+        if ns.dry_run:
+            return "<clone-id>", clone_payload
+
+        created_clone = self.bw_create_item(clone_payload)
+        clone_id = created_clone.get("id")
+        if not clone_id:
+            raise VwcliError("Clone creation succeeded but clone ID was not returned")
+        source_id = current_json.get("id") or ""
+        print(f"Cloned item [{source_id}] -> [{clone_id}]")
+        return str(clone_id), created_clone
+
+    def _apply_update_fields(
+        self,
+        target_json: dict[str, Any],
+        ns: argparse.Namespace,
+        password: str,
+        vault_org_id: str,
+    ) -> dict[str, Any]:
+        """Apply name, username, password, notes, URIs and organization overrides."""
         if ns.name or ns.username or password or ns.notes or ns.uris or ns.add_uris or ns.remove_uris:
             target_json = self.apply_item_updates(
                 target_json,
@@ -1112,6 +1101,24 @@ class Client:
         if vault_org_id:
             target_json = self.set_organization_id(target_json, vault_org_id)
 
+        return target_json
+
+    def cmd_update(self, ns: argparse.Namespace) -> None:
+        self.ensure_session()
+        if ns.refresh_cache:
+            self.refresh_collections_cache()
+
+        password = ns.password
+        if ns.generate_password:
+            password = self.bw_generate_password()
+
+        item_id = ns.id or self.find_item_id_by_search(ns.search)
+        current_json = self.bw_get_item(item_id)
+        vault_org_id = self.resolve_vault_to_org_id(ns.vault) if ns.vault else ""
+
+        target_id, target_json = self._prepare_update_target(ns, current_json, vault_org_id)
+        target_json = self._apply_update_fields(target_json, ns, password, vault_org_id)
+
         if ns.dry_run:
             print(json.dumps(target_json, indent=2))
             return
@@ -1129,44 +1136,76 @@ class Client:
             final_password = str((target_json.get("login") or {}).get("password") or "")
             self.ansible_vault_encrypt(final_password)
 
-    @staticmethod
-    def _item_group_label(item: dict[str, Any], folder_map: dict[str, str], col_map: dict[str, str]) -> str:
-        folder = folder_map.get(item.get("folderId") or "", "")
-        if folder:
-            return folder
-        col_ids = item.get("collectionIds") or []
-        names = sorted(n for cid in col_ids if (n := col_map.get(cid or "", "")))
-        return ", ".join(names) if names else "No Folder"
-
-    def cmd_search(self, ns: argparse.Namespace) -> None:
-        self.ensure_session()
-
-        org_map: dict[str, str] = {}
+    def _build_org_map(self) -> dict[str, str]:
         try:
             orgs = self.bw_list_organizations()
-            org_map = {str(o.get("id") or ""): str(o.get("name") or "") for o in orgs if o.get("id")}
+            return {str(o.get("id") or ""): str(o.get("name") or "") for o in orgs if o.get("id")}
         except VwcliError:
             print(
                 "[warn] Could not list organizations; vault column will show 'Unknown'.",
                 file=sys.stderr,
             )
+            return {}
 
-        def _vault_name(item: dict[str, Any]) -> str:
-            org_id = str(item.get("organizationId") or "")
-            if org_id:
-                return org_map.get(org_id) or "Unknown"
-            return "Personal"
+    def _build_folder_map(self) -> dict[str, str]:
+        folders = self.bw_list_folders()
+        return {str(f.get("id") or ""): str(f.get("name") or "") for f in folders if f.get("id")}
 
+    def _build_collection_map(self, required_ids: set[str]) -> dict[str, str]:
+        if not self.config.collection_cache.exists():
+            return {}
+        try:
+            cached = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
+            if not isinstance(cached, list):
+                return {}
+            col_map = {str(c.get("id") or ""): str(c.get("name") or "") for c in cached}
+            if required_ids and not all(cid in col_map for cid in required_ids):
+                self.refresh_collections_cache()
+                refreshed = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
+                if isinstance(refreshed, list):
+                    col_map = {str(c.get("id") or ""): str(c.get("name") or "") for c in refreshed}
+            return col_map
+        except json.JSONDecodeError:
+            print(
+                f"[warn] Invalid collection cache at {self.config.collection_cache}, ignoring cache values.",
+                file=sys.stderr,
+            )
+            return {}
+
+    def _fetch_search_items(self, ns: argparse.Namespace) -> tuple[str, list[dict[str, Any]]]:
         if not ns.query and not ns.uri_filter:
             raise VwcliError("Provide a QUERY and/or --uri to search")
 
         search = " ".join(ns.query)
-        # Fetch without individual-item verification so we can limit first
         items = self.bw_list_items_search(search, verify=False)
 
         if ns.uri_filter:
             uri_lower = ns.uri_filter.lower()
             items = [item for item in items if any(uri_lower in (u.get("uri") or "").lower() for u in (item.get("login") or {}).get("uris") or [])]
+
+        return search, items
+
+    def _prepare_search_display_items(
+        self,
+        items: list[dict[str, Any]],
+        ns: argparse.Namespace,
+        folder_map: dict[str, str],
+        col_map: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        sorted_items = sorted(
+            items,
+            key=lambda item: (
+                item_group_label(item, folder_map, col_map),
+                str(item.get("name") or ""),
+            ),
+        )
+        # Verify only the items that will actually be displayed (avoids N+1 for large result sets)
+        return self._verify_items(sorted_items[: ns.limit])
+
+    def cmd_search(self, ns: argparse.Namespace) -> None:
+        self.ensure_session()
+
+        search, items = self._fetch_search_items(ns)
 
         if ns.to_ansible_vault:
             first_item = self._verify_items(items[:1])
@@ -1176,82 +1215,19 @@ class Client:
             self.ansible_vault_encrypt(str(login.get("password") or ""))
             return
 
-        folders = self.bw_list_folders()
-        collections: list[dict[str, Any]] = []
-        if self.config.collection_cache.exists():
-            try:
-                cached = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
-                if isinstance(cached, list):
-                    collections = cached
-            except json.JSONDecodeError:
-                print(
-                    f"[warn] Invalid collection cache at {self.config.collection_cache}, ignoring cache values.",
-                    file=sys.stderr,
-                )
-
-        folder_map = {str(f.get("id") or ""): str(f.get("name") or "") for f in folders if f.get("id")}
-        col_map = {str(c.get("id") or ""): str(c.get("name") or "") for c in collections}
-
+        org_map = self._build_org_map()
+        folder_map = self._build_folder_map()
         item_col_ids = {str(cid or "") for item in items for cid in (item.get("collectionIds") or [])}
-        if item_col_ids and not all(cid in col_map for cid in item_col_ids):
-            self.refresh_collections_cache()
-            collections = json.loads(self.config.collection_cache.read_text(encoding="utf-8"))
-            if not isinstance(collections, list):
-                collections = []
-            col_map = {str(c.get("id") or ""): str(c.get("name") or "") for c in collections}
+        col_map = self._build_collection_map(item_col_ids)
 
-        sorted_items = sorted(
-            items,
-            key=lambda item: (
-                self._item_group_label(item, folder_map, col_map),
-                str(item.get("name") or ""),
-            ),
+        display_items = self._prepare_search_display_items(items, ns, folder_map, col_map)
+        render_search_results(
+            display_items,
+            output_json=ns.output_json,
+            org_map=org_map,
+            folder_map=folder_map,
+            col_map=col_map,
         )
-
-        # Verify only the items that will actually be displayed (avoids N+1 for large result sets)
-        display_items = self._verify_items(sorted_items[: ns.limit])
-
-        if ns.output_json:
-            print(json.dumps(display_items, indent=2))
-            return
-
-        if sys.stdout.isatty():
-            table = Table(
-                title=f"Matches: {len(display_items)}",
-                show_lines=False,
-                highlight=True,
-            )
-            table.add_column("ID", style="dim")
-            table.add_column("Vault", no_wrap=True)
-            table.add_column("Folder / Collection", overflow="fold")
-            table.add_column("Name", style="bold", no_wrap=True)
-            table.add_column("Username", no_wrap=True, style="green")
-            table.add_column("Password", no_wrap=True, style="green")
-            for item in display_items:
-                login = item.get("login") or {}
-                item_id = str(item.get("id") or "")
-                table.add_row(
-                    item_id,
-                    _vault_name(item),
-                    self._item_group_label(item, folder_map, col_map),
-                    str(item.get("name") or ""),
-                    str(login.get("username") or ""),
-                    str(login.get("password") or ""),
-                )
-            Console().print(table)
-        else:
-            for item in display_items:
-                login = item.get("login") or {}
-                print(
-                    "\t".join([
-                        str(item.get("id") or ""),
-                        _vault_name(item),
-                        self._item_group_label(item, folder_map, col_map),
-                        str(item.get("name") or ""),
-                        str(login.get("username") or ""),
-                        str(login.get("password") or ""),
-                    ])
-                )
 
     def with_bw_serve(self, func: Callable[[argparse.Namespace], None], ns: argparse.Namespace) -> None:
         self.start_bw_serve()
