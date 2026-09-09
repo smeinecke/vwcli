@@ -68,6 +68,7 @@ testpaths = [
 ]
 markers = [
     "integration: end-to-end tests that require a running Vaultwarden container",
+    "slow: tests that take a long time and are not run by default",
 ]
 
 [tool.pyright]
