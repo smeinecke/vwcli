@@ -1033,6 +1033,9 @@ class Client:
             self.bw_serve_sync()
             print(f"Assigned collection: {ns.collection}")
 
+        if ns.to_ansible_vault:
+            self.ansible_vault_encrypt(str(password or ""))
+
     def _prepare_update_target(
         self,
         ns: argparse.Namespace,

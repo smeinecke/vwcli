@@ -156,6 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refresh collection cache before resolving collection",
     )
     p_create.add_argument(
+        "--to-ansible-vault",
+        dest="to_ansible_vault",
+        action="store_true",
+        help="Encrypt the password via ansible-vault encrypt-string after creation",
+    )
+    p_create.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
