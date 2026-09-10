@@ -292,10 +292,10 @@ start_units() {
   if [[ "$INSTALL_BACKUP" -eq 1 ]]; then
     systemctl --user enable bitwarden-export.timer >/dev/null
     systemctl --user start bitwarden-export.timer
-    echo "bitwarden-cli.service and bitwarden-export.timer enabled and started for $USER"
+    echo "bitwarden-cli.service and bitwarden-export.timer enabled and started for $(id -un)"
     echo "Check status with: systemctl --user status bitwarden-cli.service bitwarden-export.timer"
   else
-    echo "bitwarden-cli.service enabled and started for $USER"
+    echo "bitwarden-cli.service enabled and started for $(id -un)"
     echo "Backup service not installed (use --install-backup to enable it)."
     echo "Check status with: systemctl --user status bitwarden-cli.service"
   fi

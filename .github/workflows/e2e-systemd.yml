@@ -52,11 +52,12 @@ jobs:
 
       - name: Wait for systemd to boot
         run: |
-          timeout 120 sh -c '
-            until docker exec vwcli-e2e systemctl is-system-running 2>/dev/null | grep -qE "^(running|degraded)"; do
-              sleep 2
-            done
-          '
+          for i in $(seq 1 60); do
+            if docker exec vwcli-e2e systemctl is-system-running 2>/dev/null | grep -qE "^(running|degraded)"; then
+              break
+            fi
+            sleep 2
+          done
 
       - name: Run E2E
         run: docker exec vwcli-e2e bash /src/tests/e2e/run-e2e.sh
@@ -65,8 +66,8 @@ jobs:
         if: failure()
         run: |
           docker exec vwcli-e2e journalctl --no-pager -n 200 || true
-          docker exec vwcli-e2e su - tester -c 'systemctl --user status bitwarden-cli.socket bitwarden-cli.service --no-pager' || true
-          docker exec vwcli-e2e su - tester -c 'journalctl --user --no-pager -u bitwarden-cli.socket -u bitwarden-cli.service -n 200' || true
+          docker exec -e XDG_RUNTIME_DIR=/run/user/0 -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus vwcli-e2e systemctl --user status bitwarden-cli.socket bitwarden-cli.service --no-pager || true
+          docker exec -e XDG_RUNTIME_DIR=/run/user/0 -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus vwcli-e2e journalctl --user --no-pager -u bitwarden-cli.socket -u bitwarden-cli.service -n 200 || true
           docker logs vwcli-e2e || true
 
       - name: Cleanup

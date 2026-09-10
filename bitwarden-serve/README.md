@@ -223,3 +223,5 @@ docker run -d --name vwcli-e2e --privileged --cgroupns=host \
   vwcli-e2e
 docker exec vwcli-e2e bash /src/tests/e2e/run-e2e.sh
 ```
+
+The E2E container runs the user service as **root's systemd user manager**; a non-root user manager in a Docker container generally does not have the capabilities needed by the unit's sandbox directives.
