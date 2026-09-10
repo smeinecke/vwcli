@@ -41,8 +41,12 @@ if [[ -s "$NVM_DIR/nvm.sh" ]]; then
   source "$NVM_DIR/nvm.sh"
 fi
 
-# Unix socket mode: patch Node's net.Server.listen to bind on a Unix socket
-# instead of a TCP port, so the daemon is not reachable over the network.
+# Unix socket mode: patch Node's net.Server.listen so the HTTP API is served
+# on a Unix socket instead of a TCP port. When started through
+# bitwarden-cli.socket, systemd has already bound the socket and hands it
+# over as fd 3 (LISTEN_FDS); the patch listens on that fd and never calls
+# bind(), which lets the unit run with SocketBindDeny=any. When run
+# standalone, the patch binds BW_SERVE_SOCKET itself instead.
 BW_SERVE_SOCKET="${BW_SERVE_SOCKET:-/run/user/$(id -u)/bw.sock}"
 export BW_SERVE_SOCKET
 PATCH_JS="${PATCH_JS:-$HOME/.local/lib/bw-unix-socket-patch.js}"
@@ -50,7 +54,17 @@ if [[ -f "$PATCH_JS" ]]; then
   export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$PATCH_JS"
 fi
 
+# Socket activation identifies the fd-owning process via LISTEN_PID, so the
+# final hop must exec() bw to keep the same PID. `nvm exec` would fork a
+# subshell and break that check, so resolve the nvm-managed bin dir and exec
+# node on the bw entrypoint directly. (The `bw` shim is a `#!/usr/bin/env node`
+# script, which would additionally fail here because node is not in the
+# service's default PATH.)
 if type -t nvm >/dev/null 2>&1; then
+  NVM_NODE_BIN="$(dirname "$(nvm which 'lts/*' 2>/dev/null || true)")"
+  if [[ "$NVM_NODE_BIN" == */bin && -x "$NVM_NODE_BIN/bw" && -x "$NVM_NODE_BIN/node" ]]; then
+    exec "$NVM_NODE_BIN/node" "$NVM_NODE_BIN/bw" serve
+  fi
   nvm exec --silent --lts -- bw serve
   exit $?
 fi

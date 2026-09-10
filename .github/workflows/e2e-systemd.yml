@@ -1,0 +1,76 @@
+name: systemd socket-activation E2E
+
+# Manual-only: exercises the real bitwarden-cli.socket / bitwarden-cli.service
+# units inside a privileged systemd Docker container, with a real
+# Vaultwarden-backed bw session.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-systemd:
+    name: Run socket-activation E2E in a systemd container
+    runs-on: ubuntu-latest
+    env:
+      E2E_SEED_DIR: /tmp/vwcli-e2e-seed
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python environment
+        run: |
+          wget -qO- https://astral.sh/uv/install.sh | sh
+          uv sync
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Bitwarden CLI
+        run: npm install -g @bitwarden/cli
+
+      - name: Prepare real bw session (Vaultwarden + register + login)
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
+        run: uv run python -m tests.e2e.prepare_session
+
+      - name: Build E2E image
+        run: docker build -t vwcli-e2e -f tests/e2e/Dockerfile tests/e2e
+
+      - name: Start systemd container
+        run: |
+          docker run -d --name vwcli-e2e \
+            --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
+            -v "$PWD:/src:ro" \
+            -v "$E2E_SEED_DIR:/seed:ro" \
+            vwcli-e2e
+
+      - name: Wait for systemd to boot
+        run: |
+          timeout 120 sh -c '
+            until docker exec vwcli-e2e systemctl is-system-running 2>/dev/null | grep -qE "^(running|degraded)"; do
+              sleep 2
+            done
+          '
+
+      - name: Run E2E
+        run: docker exec vwcli-e2e bash /src/tests/e2e/run-e2e.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker exec vwcli-e2e journalctl --no-pager -n 200 || true
+          docker exec vwcli-e2e su - tester -c 'systemctl --user status bitwarden-cli.socket bitwarden-cli.service --no-pager' || true
+          docker exec vwcli-e2e su - tester -c 'journalctl --user --no-pager -u bitwarden-cli.socket -u bitwarden-cli.service -n 200' || true
+          docker logs vwcli-e2e || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f vwcli-e2e || true
+          docker compose -f tests/integration/docker-compose.yml -p vwcli-e2e down -v || true

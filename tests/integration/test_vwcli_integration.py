@@ -78,6 +78,12 @@ def test_vwcli_unix_socket_create_search_update_delete(integration_env_unix, cap
     _create_and_search(Client(), capsys, "unix")
 
 
+def test_vwcli_socket_activated_create_search_update_delete(
+    integration_env_activated, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _create_and_search(Client(), capsys, "activated")
+
+
 @pytest.mark.slow
 def test_vwcli_fallback_create_and_search(integration_env_fallback, capsys: pytest.CaptureFixture[str]) -> None:
     """Force the CLI to start and stop its own bw serve for each command."""

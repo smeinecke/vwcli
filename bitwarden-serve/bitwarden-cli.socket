@@ -1,0 +1,15 @@
+[Unit]
+Description=Bitwarden CLI service socket
+
+[Socket]
+# Own and bind the socket so bitwarden-cli.service only ever accept()s on an
+# inherited fd and never needs to bind() itself (see SocketBindDeny=any).
+# The socket survives service restarts and is removed when this unit stops.
+ListenStream=/run/user/%U/bw.sock
+SocketMode=0600
+DirectoryMode=0700
+Accept=no
+Service=bitwarden-cli.service
+
+[Install]
+WantedBy=sockets.target

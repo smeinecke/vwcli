@@ -1,6 +1,7 @@
 [Unit]
 Description=Bitwarden CLI service
-After=network.target
+After=network.target bitwarden-cli.socket
+Requires=bitwarden-cli.socket
 StartLimitIntervalSec=30min
 StartLimitBurst=10
 
@@ -11,12 +12,26 @@ EnvironmentFile=%h/.config/systemd/user/bitwarden-cli.env
 Environment=BW_SERVE_SOCKET=/run/user/%U/bw.sock
 Environment=PATCH_JS=%h/.local/lib/bw-unix-socket-patch.js
 WorkingDirectory=%h
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
 ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
 PrivateTmp=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-# Deny any explicit TCP bind() so bw serve cannot open a TCP listener
-# if the Unix-socket patch is missing/broken.
-SocketBindDeny=tcp
+LockPersonality=true
+# The listening socket is owned by bitwarden-cli.socket and passed to this
+# service as an inherited fd, so the service must never be able to bind()
+# anything. Denying all binds also means bw serve can never fall back to a
+# TCP listener, even if the Unix-socket patch is missing or fails to load.
+SocketBindDeny=any
 
 # slow down retries if start fails
 Restart=on-failure

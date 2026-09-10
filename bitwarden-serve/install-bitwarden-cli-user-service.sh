@@ -193,6 +193,7 @@ check_sources() {
   local src
   for src in \
     "$SCRIPT_DIR/bitwarden-cli.service" \
+    "$SCRIPT_DIR/bitwarden-cli.socket" \
     "$SCRIPT_DIR/start-bw-serve.sh" \
     "$SCRIPT_DIR/bw-unix-socket-patch.js" \
     "$SCRIPT_DIR/nm-dispatcher-bitwarden-vpn-up.sh"
@@ -215,6 +216,11 @@ stop_units() {
   if systemctl --user is-active --quiet bitwarden-cli.service; then
     echo "bitwarden-cli.service is running; stopping before update."
     systemctl --user stop bitwarden-cli.service
+  fi
+
+  if systemctl --user is-active --quiet bitwarden-cli.socket; then
+    echo "bitwarden-cli.socket is active; stopping before update."
+    systemctl --user stop bitwarden-cli.socket
   fi
 
   if [[ "$INSTALL_BACKUP" -eq 1 ]]; then
@@ -248,6 +254,7 @@ install_vpn_hook() {
 install_files() {
   mkdir -p "$USER_SYSTEMD_DIR" "$LOCAL_BIN_DIR" "$LOCAL_LIB_DIR"
   install -m 0644 "$SCRIPT_DIR/bitwarden-cli.service"      "$USER_SYSTEMD_DIR/bitwarden-cli.service"
+  install -m 0644 "$SCRIPT_DIR/bitwarden-cli.socket"       "$USER_SYSTEMD_DIR/bitwarden-cli.socket"
   install -m 0755 "$SCRIPT_DIR/start-bw-serve.sh"          "$LOCAL_BIN_DIR/start-bw-serve.sh"
   install -m 0644 "$SCRIPT_DIR/bw-unix-socket-patch.js"    "$LOCAL_LIB_DIR/bw-unix-socket-patch.js"
 
@@ -278,8 +285,9 @@ setup_vwcli_config() {
 
 start_units() {
   systemctl --user daemon-reload
-  systemctl --user enable bitwarden-cli.service    >/dev/null
-  systemctl --user reset-failed bitwarden-cli.service >/dev/null 2>&1 || true
+  systemctl --user enable bitwarden-cli.socket bitwarden-cli.service >/dev/null
+  systemctl --user reset-failed bitwarden-cli.socket bitwarden-cli.service >/dev/null 2>&1 || true
+  systemctl --user start bitwarden-cli.socket
   systemctl --user start bitwarden-cli.service
   if [[ "$INSTALL_BACKUP" -eq 1 ]]; then
     systemctl --user enable bitwarden-export.timer >/dev/null

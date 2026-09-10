@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import hashlib
 import http.client
@@ -14,6 +15,7 @@ import subprocess
 import time
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 import requests
@@ -328,6 +330,55 @@ def _start_bw_serve_unix(home: Path, session: str) -> tuple[str, subprocess.Pope
     return serve_url, proc
 
 
+def _start_bw_serve_activated(home: Path, session: str) -> tuple[str, subprocess.Popen[str], Any]:
+    """Start bw serve under systemd-socket-activate, which performs a real
+    sd_listen_fds handoff: it binds the socket itself and launches bw serve
+    with LISTEN_FDS=1 and LISTEN_PID set, exactly like bitwarden-cli.socket.
+
+    The child is spawned lazily on the first connection, so this also
+    exercises the patch's inherited-fd path rather than the bind fallback.
+    """
+    socket_path = home / "bw-activated.sock"
+    socket_path_str = str(socket_path)
+    patch_path = _socket_patch_path()
+    activate = shutil.which("systemd-socket-activate")
+    bw = shutil.which("bw")
+    if not activate or not bw:
+        raise RuntimeError("systemd-socket-activate and bw are required for the socket-activation test")
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
+    env["BW_SESSION"] = session
+    env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+    env["NODE_OPTIONS"] = f"{env.get('NODE_OPTIONS', '')} --require={patch_path}".strip()
+    # systemd-socket-activate does not propagate its own environment to the
+    # spawned child; pass everything it needs explicitly via -E.
+    env_args: list[str] = []
+    for key in ("HOME", "XDG_CONFIG_HOME", "BW_SESSION", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_OPTIONS", "PATH"):
+        env_args.extend(("-E", f"{key}={env[key]}"))
+    log_path = home / "bw-activated.log"
+    log_handle = open(log_path, "w", encoding="utf-8")
+    proc = subprocess.Popen(
+        [activate, "-l", socket_path_str, *env_args, bw, "serve"],
+        env=env,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    serve_url = f"unix://{socket_path_str}"
+    if proc.poll() is not None:
+        raise RuntimeError("systemd-socket-activate exited immediately")
+    # The first connection triggers the child spawn; give it extra time.
+    try:
+        _ping_serve_url(serve_url, timeout=30.0)
+    except RuntimeError as exc:
+        log_handle.flush()
+        tail = log_path.read_text(encoding="utf-8")[-2000:]
+        raise RuntimeError(f"{exc} (log: {tail!r})") from exc
+    return serve_url, proc, log_handle
+
+
 @pytest.fixture(scope="session")
 def vaultwarden_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[VaultwardenServer, None, None]:
     """Start a Vaultwarden container, register a demo user and log in."""
@@ -399,6 +450,23 @@ def bw_serve_url_unix(vaultwarden_server: VaultwardenServer) -> str:
     return serve_url
 
 
+@pytest.fixture(scope="session")
+def bw_serve_url_activated(vaultwarden_server: VaultwardenServer) -> Generator[str, None, None]:
+    """Start a socket-activated bw serve (via systemd-socket-activate) and return its URL."""
+    serve_url, proc, log_handle = _start_bw_serve_activated(vaultwarden_server.home, vaultwarden_server.session)
+    yield serve_url
+    # Kill the whole process group: systemd-socket-activate plus the bw serve
+    # child it spawned (the child keeps running after the activator exits).
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=5)
+    if proc.poll() is None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    log_handle.close()
+
+
 @pytest.fixture()
 def integration_env(
     vaultwarden_server: VaultwardenServer,
@@ -451,6 +519,24 @@ def integration_env_unix(
     monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
     monkeypatch.setenv("BW_PASSWORD", vaultwarden_server.password)
     monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_unix)
+    monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
+    if vaultwarden_server.ansible_vault_password_file:
+        monkeypatch.setenv("ANSIBLE_VAULT_PASSWORD_FILE", str(vaultwarden_server.ansible_vault_password_file))
+    return vaultwarden_server.home
+
+
+@pytest.fixture()
+def integration_env_activated(
+    vaultwarden_server: VaultwardenServer,
+    bw_serve_url_activated: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Provide env for an integration test using the socket-activated bw serve."""
+    monkeypatch.setenv("HOME", str(vaultwarden_server.home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(vaultwarden_server.home / ".config"))
+    monkeypatch.setenv("BW_SESSION", vaultwarden_server.session)
+    monkeypatch.setenv("BW_PASSWORD", vaultwarden_server.password)
+    monkeypatch.setenv("BW_SERVE_URL", bw_serve_url_activated)
     monkeypatch.setenv("NODE_TLS_REJECT_UNAUTHORIZED", "0")
     if vaultwarden_server.ansible_vault_password_file:
         monkeypatch.setenv("ANSIBLE_VAULT_PASSWORD_FILE", str(vaultwarden_server.ansible_vault_password_file))

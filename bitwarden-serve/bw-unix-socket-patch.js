@@ -8,6 +8,22 @@ const SOCKET_PATH =
   process.env.BW_SERVE_SOCKET ||
   `/run/user/${process.getuid()}/bw.sock`;
 
+// First fd handed over by systemd socket activation (sd_listen_fds protocol).
+const SD_LISTEN_FDS_START = 3;
+
+// When socket-activated, systemd has already bound and listened on the
+// socket and passes it to the service as fd 3, advertising it via
+// LISTEN_FDS/LISTEN_PID. LISTEN_PID must be our own pid; otherwise the fds
+// were meant for a different process and must be ignored.
+function activationFd() {
+  const fds = Number.parseInt(process.env.LISTEN_FDS || "", 10);
+  const pid = Number.parseInt(process.env.LISTEN_PID || "", 10);
+  if (pid === process.pid && fds >= 1) {
+    return SD_LISTEN_FDS_START;
+  }
+  return undefined;
+}
+
 // The current Bitwarden CLI validates the HTTP Host header against the
 // configured hostname/port. When listening on a Unix socket the hostname is
 // meaningless, but a bare "Host: localhost" header (which Python's
@@ -71,11 +87,21 @@ net.Server.prototype.listen = function patchedListen(...args) {
     return originalListen.apply(this, args);
   }
 
-  ensureParentDir(SOCKET_PATH);
-  cleanupStaleSocket(SOCKET_PATH);
-
   const lastArg = args[args.length - 1];
   const cb = typeof lastArg === "function" ? lastArg : undefined;
+
+  const fd = activationFd();
+  if (fd !== undefined) {
+    // Socket-activated: the socket is already bound and listening, so just
+    // listen() on the inherited fd. No bind() happens here, which is what
+    // allows the service unit to run with SocketBindDeny=any.
+    return cb
+      ? originalListen.call(this, { fd }, cb)
+      : originalListen.call(this, { fd });
+  }
+
+  ensureParentDir(SOCKET_PATH);
+  cleanupStaleSocket(SOCKET_PATH);
 
   const result = cb
     ? originalListen.call(this, SOCKET_PATH, cb)
