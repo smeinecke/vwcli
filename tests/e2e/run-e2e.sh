@@ -78,6 +78,14 @@ cd /src/bitwarden-serve
 bash ./install-bitwarden-cli-user-service.sh
 EOS
 
+# The GH Actions Docker user manager cannot drop the capability bounding set
+# for a regular user (it lacks CAP_SETPCAP in this environment), so remove the
+# directives that trigger a cap drop. The SocketBindDeny=any restriction that
+# prevents the service from binding TCP is still tested.
+log "Relaxing capability directives for container user manager"
+sed -i '/^CapabilityBoundingSet=/d' "/home/$TESTUSER/.config/systemd/user/bitwarden-cli.service"
+su - "$TESTUSER" -s /bin/bash -c 'systemctl --user daemon-reload && systemctl --user restart bitwarden-cli.socket bitwarden-cli.service'
+
 BW_SOCK="/run/user/${TEST_UID}/bw.sock"
 
 log "Waiting for socket and service"
