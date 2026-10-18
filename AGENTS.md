@@ -36,9 +36,11 @@ runs `make integration-test` on PRs (`.github/workflows/`).
 
 ## Gotchas
 
-- Integration tests pull `vaultwarden/server:latest` - upstream API changes
-  can break the harness (e.g. registration moved to a two-step
-  `send-verification-email` -> `register/finish` flow in 1.37.x).
+- Integration tests pin `vaultwarden/server` and `@bitwarden/cli` - upstream
+  API changes have broken the harness before (registration moved to a
+  two-step `send-verification-email` -> `register/finish` flow in 1.37.4;
+  1.37.4 also added an `encryptedByKeyId` check that rejects org ciphers
+  from bw >= 2026.9). Bump the pins deliberately, not blindly.
 - The collection cache (`~/.cache/vwcli/collections.json`) stores full
   `Parent/Child` paths; `--collection` resolution needs a unique exact match.
 - `vwcli <unknown>` is shorthand for `vwcli search <unknown>` - keep new

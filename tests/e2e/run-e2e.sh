@@ -36,7 +36,9 @@ curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bas
 # shellcheck source=/dev/null
 . "$NVM_DIR/nvm.sh"
 nvm install --lts
-nvm exec --silent --lts -- npm install -g @bitwarden/cli
+# Pinned: bw >= 2026.9 needs server key-id endpoints (>= 1.37.4) and sends
+# encryptedByKeyId, which 1.37.4 wrongly rejects for org ciphers.
+nvm exec --silent --lts -- npm install -g @bitwarden/cli@2026.8.0
 nvm exec --silent --lts -- bw --version
 
 log "Copying Bitwarden CLI data and session into root home"

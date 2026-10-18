@@ -30,7 +30,9 @@ jobs:
           node-version: lts/*
 
       - name: Install Bitwarden CLI
-        run: npm install -g @bitwarden/cli
+        # Pinned: bw >= 2026.9 needs server key-id endpoints (>= 1.37.4) and
+        # sends encryptedByKeyId, which 1.37.4 wrongly rejects for org ciphers.
+        run: npm install -g @bitwarden/cli@2026.8.0
 
       - name: Prepare real bw session (Vaultwarden + register + login)
         env:
