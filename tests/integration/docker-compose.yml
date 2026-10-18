@@ -1,7 +1,11 @@
 ---
 services:
   vaultwarden:
-    image: vaultwarden/server:latest
+    # Pinned: 1.37.4 removed the legacy register endpoint and added an
+    # encryptedByKeyId check that wrongly rejects org-owned ciphers created
+    # via POST /ciphers (e.g. bw CLI), breaking `create --vault/--collection`.
+    # Revisit once upstream ships the org-cipher exemption.
+    image: vaultwarden/server:1.37.3
     container_name: vwcli-vaultwarden-test
     restart: "no"
     ports:
