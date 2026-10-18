@@ -61,10 +61,6 @@ def _compose_file() -> Path:
     return Path(__file__).with_name("docker-compose.yml").resolve()
 
 
-def _socket_patch_path() -> Path:
-    return Path(__file__).parents[2] / "bitwarden-serve" / "bw-unix-socket-patch.js"
-
-
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((TEST_HOST, 0))
@@ -320,19 +316,18 @@ def _start_bw_serve_tcp(home: Path, session: str) -> tuple[str, subprocess.Popen
 def _start_bw_serve_unix(home: Path, session: str) -> tuple[str, subprocess.Popen[str]]:
     socket_path = home / "bw.sock"
     socket_path_str = str(socket_path)
-    patch_path = _socket_patch_path()
-    node = shutil.which("node")
     bw = shutil.which("bw")
-    if not node or not bw:
-        raise RuntimeError("node and bw are required for the unix socket service test")
+    if not bw:
+        raise RuntimeError("bw is required for the unix socket service test")
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["XDG_CONFIG_HOME"] = str(home / ".config")
     env["BW_SESSION"] = session
     env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
-    env["BW_SERVE_SOCKET"] = socket_path_str
     proc = subprocess.Popen(
-        [node, "--require", str(patch_path), bw, "serve", "--hostname", TEST_HOST, "--port", "8087"],
+        # --port 80 keeps the Host-header allowlist compatible with clients
+        # that send a bare "Host: localhost" over the unix socket.
+        ["bw", "serve", "--hostname", f"unix://{socket_path_str}", "--port", "80"],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -352,11 +347,10 @@ def _start_bw_serve_activated(home: Path, session: str) -> tuple[str, subprocess
     with LISTEN_FDS=1 and LISTEN_PID set, exactly like bitwarden-cli.socket.
 
     The child is spawned lazily on the first connection, so this also
-    exercises the patch's inherited-fd path rather than the bind fallback.
+    exercises bw's native fd+listening:// inherited-fd path.
     """
     socket_path = home / "bw-activated.sock"
     socket_path_str = str(socket_path)
-    patch_path = _socket_patch_path()
     activate = shutil.which("systemd-socket-activate")
     bw = shutil.which("bw")
     if not activate or not bw:
@@ -366,16 +360,15 @@ def _start_bw_serve_activated(home: Path, session: str) -> tuple[str, subprocess
     env["XDG_CONFIG_HOME"] = str(home / ".config")
     env["BW_SESSION"] = session
     env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
-    env["NODE_OPTIONS"] = f"{env.get('NODE_OPTIONS', '')} --require={patch_path}".strip()
     # systemd-socket-activate does not propagate its own environment to the
     # spawned child; pass everything it needs explicitly via -E.
     env_args: list[str] = []
-    for key in ("HOME", "XDG_CONFIG_HOME", "BW_SESSION", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_OPTIONS", "PATH"):
+    for key in ("HOME", "XDG_CONFIG_HOME", "BW_SESSION", "NODE_TLS_REJECT_UNAUTHORIZED", "PATH"):
         env_args.extend(("-E", f"{key}={env[key]}"))
     log_path = home / "bw-activated.log"
     log_handle = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
-        [activate, "-l", socket_path_str, *env_args, bw, "serve"],
+        [activate, "-l", socket_path_str, *env_args, bw, "serve", "--hostname", "fd+listening://3", "--port", "80"],
         env=env,
         stdout=log_handle,
         stderr=subprocess.STDOUT,

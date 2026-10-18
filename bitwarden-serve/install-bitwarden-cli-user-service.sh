@@ -195,7 +195,6 @@ check_sources() {
     "$SCRIPT_DIR/bitwarden-cli.service" \
     "$SCRIPT_DIR/bitwarden-cli.socket" \
     "$SCRIPT_DIR/start-bw-serve.sh" \
-    "$SCRIPT_DIR/bw-unix-socket-patch.js" \
     "$SCRIPT_DIR/nm-dispatcher-bitwarden-vpn-up.sh"
   do
     [[ -f "$src" ]] || { echo "Missing required file: $src" >&2; exit 1; }
@@ -256,7 +255,9 @@ install_files() {
   install -m 0644 "$SCRIPT_DIR/bitwarden-cli.service"      "$USER_SYSTEMD_DIR/bitwarden-cli.service"
   install -m 0644 "$SCRIPT_DIR/bitwarden-cli.socket"       "$USER_SYSTEMD_DIR/bitwarden-cli.socket"
   install -m 0755 "$SCRIPT_DIR/start-bw-serve.sh"          "$LOCAL_BIN_DIR/start-bw-serve.sh"
-  install -m 0644 "$SCRIPT_DIR/bw-unix-socket-patch.js"    "$LOCAL_LIB_DIR/bw-unix-socket-patch.js"
+  # bw >= 2025.8 has native unix:// and fd+listening:// support; the old
+  # Node.js preload patch is obsolete - remove it if an older install left it.
+  rm -f "$LOCAL_LIB_DIR/bw-unix-socket-patch.js"
 
   if [[ "$INSTALL_BACKUP" -eq 1 ]]; then
     install -m 0644 "$SCRIPT_DIR/bitwarden-export.service" "$USER_SYSTEMD_DIR/bitwarden-export.service"

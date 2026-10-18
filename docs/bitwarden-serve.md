@@ -15,7 +15,6 @@ The daemon is the supported way to run vwcli: commands talk to it over its Unix 
 | `start-bw-serve.sh` | Startup script (network/VPN check + `bw serve`) |
 | `bitwarden-backup.sh` | Backup script (sync + encrypted JSON export, keep last 7) |
 | `install-bitwarden-cli-user-service.sh` | Installer - copies units & scripts, creates env file |
-| `bw-unix-socket-patch.js` | Node.js `--require` patch that redirects `bw serve` from TCP to a Unix socket |
 | `nm-dispatcher-bitwarden-vpn-up.sh` | NetworkManager dispatcher hook - starts service on VPN up |
 | `docker-compose.yml` | Local Vaultwarden instance for testing |
 
@@ -24,6 +23,9 @@ The daemon is the supported way to run vwcli: commands talk to it over its Unix 
 ### nvm + Node.js LTS
 
 The scripts prefer the `bw` CLI managed via nvm, with a plain `bw` in `PATH` as fallback.
+`bw` >= 2025.8 is required - that release added native `unix://` and
+`fd+listening://` `--hostname` support to `bw serve` (bitwarden/clients#14262),
+which the socket setup relies on.
 
 ```bash
 # Install nvm
@@ -51,7 +53,7 @@ Run the installer **once** as the target user:
 The installer will:
 1. Check for the Bitwarden CLI (`bw`) and optionally install it (and `nvm`) only when missing.
 2. Stop any running `bitwarden-cli.service` (and `bitwarden-export.timer` only when backup install is requested) during the update.
-3. Copy service units to `~/.config/systemd/user/`, scripts to `~/.local/bin/`, and the socket patch to `~/.local/lib/`.
+3. Copy service units to `~/.config/systemd/user/` and scripts to `~/.local/bin/` (a stale `bw-unix-socket-patch.js` left behind by older installs is removed; `bw` >= 2025.8 no longer needs it).
 4. Create/update `~/.config/systemd/user/bitwarden-cli.env` with `BW_SESSION` and `BW_SERVER_URL`.
 5. Enable and start `bitwarden-cli.service`.
 
@@ -163,18 +165,18 @@ systemctl --user disable --now bitwarden-cli.service bitwarden-cli.socket bitwar
 
 ## Unix socket mode
 
-`bw serve` normally binds a TCP port (`127.0.0.1:8087`). The service instead uses systemd socket activation:
+`bw serve` normally binds a TCP port (`127.0.0.1:8087`). Since `bw` 2025.8 it also accepts `unix://<path>` and `fd+listening://<fd>` as `--hostname` (bitwarden/clients#14262). The service uses the latter with systemd socket activation:
 
 - `bitwarden-cli.socket` binds `/run/user/<uid>/bw.sock` (mode `0600`, inside `/run/user/<uid>` mode `0700`) before the service starts and hands it to `bw serve` as an inherited file descriptor (`LISTEN_FDS`, fd 3).
-- `bw-unix-socket-patch.js` — a Node.js `--require` preload that intercepts `net.Server.prototype.listen` — rewrites the TCP `listen()` call onto the inherited fd, so `bw serve` never calls `bind()`.
-- `SocketBindDeny=any` in the service unit therefore blocks every `bind()`: `bw serve` cannot open a TCP (or any other) listener even if the patch is absent or fails to load. When run outside socket activation (e.g. a manual `bw serve` or the integration tests), the patch falls back to binding `BW_SERVE_SOCKET` itself.
+- `start-bw-serve.sh` detects the activation (`LISTEN_PID`/`LISTEN_FDS`) and runs `bw serve --hostname fd+listening://3 --port 80`, so `bw serve` only `accept()`s on the inherited fd and never calls `bind()`. Outside socket activation it uses `bw serve --hostname unix://$BW_SERVE_SOCKET --port 80` instead. The `--port 80` is required even though nothing is bound: bw validates the request `Host` header against the configured port and only accepts bare `localhost`/`127.0.0.1` (what unix-socket clients send) for ports 80/443.
+- `SocketBindDeny=any` in the service unit therefore blocks every `bind()`: `bw serve` cannot open a TCP (or any other) listener at all.
 - The socket is owned by the socket unit, so it survives service restarts (no stale-socket cleanup races) and disappears when the socket unit stops. Clients can even connect while the service is still starting — the kernel backlog queues the connection.
 
 The service stays enabled and running as a daemon; activation is used for socket ownership and hardening, not for on-demand start/stop.
 
 Additional sandboxing in the unit: `NoNewPrivileges`, an empty `CapabilityBoundingSet`, `RestrictSUIDSGID`, `ProtectKernelTunables/Modules/Logs`, `ProtectControlGroups`, `RestrictNamespaces`, `ProtectClock`, `ProtectHostname`, `LockPersonality` and `UMask=0077`. `MemoryDenyWriteExecute` is deliberately not set (it breaks Node's JIT), and `ProtectHome` is not set because `bw` needs its config/data dir — you can opt in with `ProtectHome=tmpfs` plus `BindPaths=`/`ReadWritePaths=` for the directories `bw` actually needs.
 
-The socket path is controlled by `ListenStream=` in `bitwarden-cli.socket` (and mirrored via `BW_SERVE_SOCKET` in the service unit for the non-activated fallback).
+The socket path is controlled by `ListenStream=` in `bitwarden-cli.socket` (and mirrored via `BW_SERVE_SOCKET` in the service unit for the standalone `unix://` mode).
 
 Manual test (requires `BW_SESSION` to be set and vault unlocked):
 
@@ -196,7 +198,7 @@ It will:
 1. Start an ephemeral Vaultwarden container on `https://127.0.0.1:18443` using a self-signed certificate.
 2. Register a hardcoded demo user.
 3. Run `bw login` against the container.
-4. Start `bw serve` on a free local TCP port, on a Unix socket (using `bitwarden-serve/bw-unix-socket-patch.js` in its path-bind fallback), and socket-activated via `systemd-socket-activate` (exercising the patch's `LISTEN_FDS` / inherited-fd path).
+4. Start `bw serve` on a free local TCP port, on a Unix socket (`--hostname unix://...`), and socket-activated via `systemd-socket-activate` (`--hostname fd+listening://3`, exercising the `LISTEN_FDS` / inherited-fd path).
 5. Exercise `vwcli create`, `search`, `update` and `delete` through `bw serve`.
 
 Run the fast integration tests (TCP and Unix socket services) locally with:

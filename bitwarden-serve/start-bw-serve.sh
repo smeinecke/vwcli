@@ -41,36 +41,42 @@ if [[ -s "$NVM_DIR/nvm.sh" ]]; then
   source "$NVM_DIR/nvm.sh"
 fi
 
-# Unix socket mode: patch Node's net.Server.listen so the HTTP API is served
-# on a Unix socket instead of a TCP port. When started through
-# bitwarden-cli.socket, systemd has already bound the socket and hands it
-# over as fd 3 (LISTEN_FDS); the patch listens on that fd and never calls
-# bind(), which lets the unit run with SocketBindDeny=any. When run
-# standalone, the patch binds BW_SERVE_SOCKET itself instead.
-BW_SERVE_SOCKET="${BW_SERVE_SOCKET:-/run/user/$(id -u)/bw.sock}"
-export BW_SERVE_SOCKET
-PATCH_JS="${PATCH_JS:-$HOME/.local/lib/bw-unix-socket-patch.js}"
-if [[ -f "$PATCH_JS" ]]; then
-  export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$PATCH_JS"
+# Unix socket mode: bw serve (>= 2025.8, bitwarden/clients#14262) accepts
+# non-TCP listeners via --hostname:
+#   fd+listening://<fd> - accept() on an already-bound socket handed over by
+#                         the supervisor. Under bitwarden-cli.socket, systemd
+#                         binds /run/user/<uid>/bw.sock and passes it as fd 3
+#                         (LISTEN_FDS=1, LISTEN_PID=$$), so bw never calls
+#                         bind() and the unit can run with SocketBindDeny=any.
+#   unix://<path>       - bind a Unix socket directly (standalone runs).
+# --port 80 is required even though no TCP bind happens: bw validates the
+# HTTP Host header against the configured port and only allows bare
+# "localhost"/"127.0.0.1" (what unix-socket clients send) for port 80/443.
+if [[ "${LISTEN_PID:-}" == "$$" && "${LISTEN_FDS:-0}" -ge 1 ]]; then
+  SERVE_ARGS=(serve --hostname "fd+listening://3" --port 80)
+else
+  BW_SERVE_SOCKET="${BW_SERVE_SOCKET:-/run/user/$(id -u)/bw.sock}"
+  if [[ -S "$BW_SERVE_SOCKET" ]]; then
+    rm -f "$BW_SERVE_SOCKET"
+  fi
+  umask 077 # unix:// listeners get their mode from umask; keep it 0600
+  SERVE_ARGS=(serve --hostname "unix://$BW_SERVE_SOCKET" --port 80)
 fi
 
-# Socket activation identifies the fd-owning process via LISTEN_PID, so the
-# final hop must exec() bw to keep the same PID. `nvm exec` would fork a
-# subshell and break that check, so resolve the nvm-managed bin dir and exec
-# node on the bw entrypoint directly. (The `bw` shim is a `#!/usr/bin/env node`
-# script, which would additionally fail here because node is not in the
-# service's default PATH.)
+# Resolve the nvm-managed bin dir and exec node on the bw entrypoint directly.
+# (The `bw` shim is a `#!/usr/bin/env node` script, which would fail here
+# because node is not in the service's default PATH.)
 if type -t nvm >/dev/null 2>&1; then
   NVM_NODE_BIN="$(dirname "$(nvm which 'lts/*' 2>/dev/null || true)")"
   if [[ "$NVM_NODE_BIN" == */bin && -x "$NVM_NODE_BIN/bw" && -x "$NVM_NODE_BIN/node" ]]; then
-    exec "$NVM_NODE_BIN/node" "$NVM_NODE_BIN/bw" serve
+    exec "$NVM_NODE_BIN/node" "$NVM_NODE_BIN/bw" "${SERVE_ARGS[@]}"
   fi
-  nvm exec --silent --lts -- bw serve
+  nvm exec --silent --lts -- bw "${SERVE_ARGS[@]}"
   exit $?
 fi
 
 if command -v bw >/dev/null 2>&1; then
-  exec bw serve
+  exec bw "${SERVE_ARGS[@]}"
 fi
 
 echo "Neither nvm nor bw was found. Install nvm+@bitwarden/cli or ensure bw is in PATH." >&2

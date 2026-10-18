@@ -73,8 +73,9 @@ The harness (`tests/integration/conftest.py`):
    `/identity/accounts/register/finish`; the legacy single-shot endpoint is
    used as a fallback for older images).
 3. Logs in with `bw login` and starts `bw serve` in three modes: TCP port,
-   Unix socket (via `bitwarden-serve/bw-unix-socket-patch.js` path-bind
-   fallback) and `systemd-socket-activate` (exercises `LISTEN_FDS`).
+   Unix socket (`--hostname unix://...`) and `systemd-socket-activate`
+   (`--hostname fd+listening://3`, exercises `LISTEN_FDS`). Requires
+   `bw` >= 2025.8 for the native socket support.
 4. Exercises the full vwcli surface: create/search/update/clone/delete,
    attachments, collections, move, ansible-vault output.
 
