@@ -2,6 +2,8 @@
 
 This directory contains a systemd user service that runs `bw serve` as a persistent local daemon, an optional scheduled encrypted-export backup, and a local Vaultwarden instance for fallback/testing.
 
+The daemon is the supported way to run vwcli: commands talk to it over its Unix socket instead of paying Node.js startup for a throwaway `bw serve` per invocation. Install it before using vwcli regularly.
+
 ## Files
 
 | File | Purpose |

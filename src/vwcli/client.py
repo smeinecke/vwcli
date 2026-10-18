@@ -260,6 +260,13 @@ class Client:
         if self._maybe_use_systemd_service():
             return
 
+        print(
+            "[warn] No persistent bw serve found; spawning a temporary instance. "
+            "This adds seconds of startup to every command - install the systemd "
+            "user service for regular use: "
+            "bitwarden-serve/install-bitwarden-cli-user-service.sh",
+            file=sys.stderr,
+        )
         self.ensure_session()
         port = self._find_free_port()
         self.bw_serve_url = f"http://{BW_SERVE_HOST}:{port}"

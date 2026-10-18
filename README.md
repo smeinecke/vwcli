@@ -35,11 +35,21 @@ Bitwarden/Vaultwarden CLI wrapper - a convenience layer on top of the official
   bw config server https://vault.example.com
   ```
 
+- A running `bw serve` daemon. vwcli is built around it - without one, every
+  command spawns a throwaway instance and pays seconds of Node.js startup.
+  The `bitwarden-serve/` systemd user service is the supported setup
+  (socket-activated, hardened unit):
+
+  ```bash
+  bitwarden-serve/install-bitwarden-cli-user-service.sh
+  ```
+
+  Details: [docs/bitwarden-serve.md](docs/bitwarden-serve.md)
+
 Optional:
 
 - `ansible-vault` (only for `--to-ansible-vault`)
-- systemd user session for the persistent `bw serve` daemon and scheduled
-  encrypted backups - see [docs/bitwarden-serve.md](docs/bitwarden-serve.md)
+- the scheduled encrypted-export timer in `bitwarden-serve/`
 
 ## Install
 

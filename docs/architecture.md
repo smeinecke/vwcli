@@ -53,7 +53,9 @@ Requests support both transports transparently:
 1. configured `BW_SERVE_URL` that answers `/status`
 2. the `bitwarden-cli.service` systemd user unit over its Unix socket
 3. a self-spawned `bw serve` on a free `127.0.0.1` port, SIGTERMed via
-   `atexit`/`stop_bw_serve`
+   `atexit`/`stop_bw_serve` - a slow compatibility fallback (seconds of
+   startup per command) meant for one-off/CI use; vwcli warns and points at
+   the `bitwarden-serve/` systemd installer
 
 A managed (self-spawned) daemon gets its log in a temp file that is cleaned
 up on exit. After every mutating command vwcli POSTs `/sync`

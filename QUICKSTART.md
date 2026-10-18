@@ -37,7 +37,21 @@ uv tool install .          # or: uv sync && uv run vwcli help
 vwcli help
 ```
 
-## 4. Log in
+## 4. Install the persistent bw serve service
+
+vwcli needs a running `bw serve` REST daemon to be usable - without one, every
+command pays seconds of Node.js startup for a throwaway instance. Install the
+systemd user service (Unix socket, hardened unit, socket-activated):
+
+```bash
+cd bitwarden-serve
+./install-bitwarden-cli-user-service.sh                 # daemon only
+./install-bitwarden-cli-user-service.sh --install-backup # + export timer (optional)
+```
+
+Details: [docs/bitwarden-serve.md](docs/bitwarden-serve.md).
+
+## 5. Log in
 
 ```bash
 vwcli login
@@ -45,14 +59,13 @@ vwcli login
 
 This runs `bw login` if needed, then `bw unlock --raw`, and caches the session
 token in `~/.config/vwcli/config` (mode `0600`) together with an expiry
-timestamp. If the `bitwarden-cli.service` systemd unit is installed (see
-[docs/bitwarden-serve.md](docs/bitwarden-serve.md)) the new token is also
-written to its env file and the service is restarted.
+timestamp. The new token is also written to the service env file and
+`bitwarden-cli.service` is restarted with it.
 
 Tip: set `BW_PASSWORD` in the environment to unlock non-interactively
 (`bw unlock --passwordenv BW_PASSWORD`).
 
-## 5. Build the collection cache
+## 6. Build the collection cache
 
 Only needed if you use organization collections (names instead of IDs):
 
@@ -65,7 +78,7 @@ This writes `~/.cache/vwcli/collections.json` with full `Parent/Child` paths.
 Re-run `vwcli collections cache` (or pass `--refresh-cache` to commands that
 support it) after changing collections on the server.
 
-## 6. Everyday commands
+## 7. Everyday commands
 
 ```bash
 # Search - bare words are treated as `vwcli search`:
@@ -98,7 +111,7 @@ vwcli delete --search example.com
 vwcli delete --id <uuid> --yes
 ```
 
-## 7. Preview before writing
+## 8. Preview before writing
 
 `create`, `update`/`clone` and `move` accept `--dry-run`, which prints the JSON
 that would be sent (or the items that would be moved) without touching the
@@ -108,19 +121,6 @@ vault:
 vwcli update --search example.com --generate-password --dry-run
 vwcli move --from "Infra/Old" --to "Infra/New" --dry-run
 ```
-
-## 8. Optional: persistent bw serve + backups
-
-For a always-on local REST daemon (Unix socket, hardened systemd unit) and
-scheduled encrypted exports, install the user service:
-
-```bash
-cd bitwarden-serve
-./install-bitwarden-cli-user-service.sh                 # daemon only
-./install-bitwarden-cli-user-service.sh --install-backup # + export timer
-```
-
-Details: [docs/bitwarden-serve.md](docs/bitwarden-serve.md).
 
 ## Next steps
 

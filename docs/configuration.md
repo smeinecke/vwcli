@@ -71,7 +71,10 @@ For commands that support it, `bw_serve_url` is resolved in this order:
    started if needed and vwcli talks to it over the Unix socket
    (`unix://$BW_SERVE_SOCKET`).
 3. **Self-spawned daemon** - `bw serve --hostname 127.0.0.1 --port <free>`
-   started for the duration of the command and terminated on exit.
+   started for the duration of the command and terminated on exit. This is a
+   compatibility fallback for one-off/CI use, not a daily-driver mode: the
+   startup cost makes interactive use painfully slow, so vwcli warns and
+   points at the `bitwarden-serve/` installer instead.
 
 If no `bw` binary is in `PATH`, vwcli runs it through nvm
 (`nvm exec --silent --lts -- bw`); if nvm is missing too, commands fail with
