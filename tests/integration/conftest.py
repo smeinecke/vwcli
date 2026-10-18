@@ -216,7 +216,23 @@ def _register_user(url: str, email: str, password: str) -> None:
             "encryptedPrivateKey": encrypted_private_key,
         },
     }
-    resp = requests.post(f"{url}/identity/accounts/register", json=payload, verify=False)
+
+    # Vaultwarden >= 1.37 removed the legacy single-shot endpoint; registration
+    # is now two-step: fetch a verification token, then finish. With mail
+    # disabled the token is returned directly.
+    verify = requests.post(
+        f"{url}/identity/accounts/register/send-verification-email",
+        json={"email": email, "name": "Integration Test"},
+        headers={"Accept": "application/json"},
+        verify=False,
+    )
+    if verify.status_code == 404:
+        resp = requests.post(f"{url}/identity/accounts/register", json=payload, verify=False)
+    else:
+        if verify.status_code != 200:
+            raise RuntimeError(f"Failed to request verification token: {verify.status_code} {verify.text[:500]}")
+        payload["emailVerificationToken"] = verify.json()
+        resp = requests.post(f"{url}/identity/accounts/register/finish", json=payload, verify=False)
     if resp.status_code != 200:
         raise RuntimeError(f"Failed to register test user: {resp.status_code} {resp.text[:500]}")
 
