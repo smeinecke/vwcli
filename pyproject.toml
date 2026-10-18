@@ -2,7 +2,7 @@
 name = "vwcli"
 version = "0.1.0"
 description = "Bitwarden/Vaultwarden CLI wrapper"
-readme = {text = "Bitwarden/Vaultwarden CLI wrapper", content-type = "text/plain"}
+readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = [
