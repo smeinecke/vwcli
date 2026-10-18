@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import getpass
 import http.client
 import json
 import os
@@ -794,14 +795,52 @@ class Client:
             if self.bw_run_interactive(["login"]) != 0:
                 raise VwcliError("bw login failed")
 
-        unlock_args = ["unlock", "--raw"]
-        if os.environ.get("BW_PASSWORD"):
-            unlock_args.extend(["--passwordenv", "BW_PASSWORD"])
-        session = self.bw_run(unlock_args).strip()
+        session = self._unlock_session()
+        self._apply_new_session(session, restart_service=True)
+
+    def _unlock_session(self) -> str:
+        """Return a fresh BW_SESSION via `bw unlock`.
+
+        First try without input (covers an already-unlocked vault). Otherwise
+        prompt for the master password and pass it via --passwordenv: bw's own
+        prompt writes to stderr, which is captured here, so it would never be
+        shown - the command just sat silently and then failed with an empty
+        session.
+        """
+        run = self._bw_cmd(["unlock", "--raw"], stdin=subprocess.DEVNULL)
+        session = run.stdout.strip() if run.returncode == 0 else ""
+        if session:
+            return session
+
+        password = os.environ.get("BW_PASSWORD")
+        if not password:
+            try:
+                password = getpass.getpass("Master password: ")
+            except (EOFError, KeyboardInterrupt) as exc:
+                raise VwcliError(
+                    "bw unlock needs the master password; set BW_PASSWORD or run interactively"
+                ) from exc
+
+        env_key = "VWCLI_BW_PASSWORD"
+        os.environ[env_key] = password
+        try:
+            run = self._bw_cmd(
+                ["unlock", "--raw", "--passwordenv", env_key],
+                stdin=subprocess.DEVNULL,
+            )
+        finally:
+            os.environ.pop(env_key, None)
+
+        if run.returncode != 0:
+            err = run.stderr or run.stdout
+            if err:
+                print(err, end="" if err.endswith("\n") else "\n", file=sys.stderr)
+            raise VwcliError("")
+
+        session = run.stdout.strip()
         if not session:
             raise VwcliError("Failed to obtain BW_SESSION from bw unlock")
-
-        self._apply_new_session(session, restart_service=True)
+        return session
 
     def bw_sync(self) -> None:
         if self.bw_serve_url:
