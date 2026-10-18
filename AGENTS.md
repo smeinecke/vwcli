@@ -36,12 +36,17 @@ runs `make integration-test` on PRs (`.github/workflows/`).
 
 ## Gotchas
 
-- Integration tests pin `vaultwarden/server` and `@bitwarden/cli` - upstream
-  API changes have broken the harness before (registration moved to a
-  two-step `send-verification-email` -> `register/finish` flow in 1.37.4;
-  1.37.4 also added an `encryptedByKeyId` check that rejects org ciphers
-  from bw >= 2026.9). Bump the pins deliberately, not blindly.
+- Integration tests run against `vaultwarden/server:latest` - upstream API
+  changes have broken the harness before. Registration is two-step since
+  1.37.4 (`send-verification-email` -> `register/finish`, legacy endpoint
+  kept as fallback). 1.37.4 also rejects org-cipher creation via
+  `POST /ciphers` (`encryptedByKeyId` is checked against the user key), so
+  vwcli creates org-bound items as personal first and shares them into the
+  org - the share endpoint is exempt. Preserve that flow.
 - The collection cache (`~/.cache/vwcli/collections.json`) stores full
   `Parent/Child` paths; `--collection` resolution needs a unique exact match.
 - `vwcli <unknown>` is shorthand for `vwcli search <unknown>` - keep new
   subcommand names out of collision with typical search terms.
+- `Config` resolves `Path.home()` at construction, not import - the module
+  constants would freeze the real HOME and let tests clobber the real
+  `~/.config/vwcli/config`. Keep path resolution dynamic.

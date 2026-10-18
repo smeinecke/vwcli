@@ -93,6 +93,18 @@ exact match on the full path.
 - `move` (items) resolves `--from`/`--to` through the cache and refuses
   cross-organization moves.
 
+## Creating items in an org vault
+
+`POST /ciphers` on Vaultwarden >= 1.37.4 validates `encryptedByKeyId` against
+the **user** key id - but `bw` >= 2026.9 encrypts org-bound ciphers with the
+org key, so direct org creates are rejected with "Invalid key cipher" (an
+upstream regression; the share/move endpoints are exempt). `vwcli create
+--vault/--organization-id` and `clone` therefore create the item in the
+personal vault first and then share it into the org via
+`bw_move_item_to_org` (`bw move` / `POST /move/<id>/<org>`), carrying the
+collection assignments along in the same call - which is also how upstream
+clients attach items to organizations.
+
 ## Clone semantics
 
 `clone` is `update --clone`: the source item is fetched, server-managed keys
