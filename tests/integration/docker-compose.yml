@@ -1,12 +1,7 @@
 ---
 services:
   vaultwarden:
-    # Pinned: track releases deliberately - upstream API changes (register
-    # rework in 1.37.4, the org-cipher encryptedByKeyId check in 1.37.4) have
-    # broken this harness before. Pair with the bw CLI pinned in
-    # .github/workflows/integration.yml - bw >= 2026.9 sends encryptedByKeyId
-    # which 1.37.4 wrongly validates against the user key for org ciphers.
-    image: vaultwarden/server:1.37.4
+    image: vaultwarden/server:latest
     container_name: vwcli-vaultwarden-test
     restart: "no"
     ports:

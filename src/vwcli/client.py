@@ -1015,16 +1015,31 @@ class Client:
         if ns.notes is None:
             item_json["notes"] = None
 
-        if ns.organization_id:
-            item_json = self.set_organization_id(item_json, ns.organization_id)
-
+        target_org_id = ns.organization_id
         if ns.vault:
-            org_id = self.resolve_vault_to_org_id(ns.vault)
-            item_json = self.set_organization_id(item_json, org_id)
+            target_org_id = self.resolve_vault_to_org_id(ns.vault)
+        if target_org_id:
+            item_json = self.set_organization_id(item_json, target_org_id)
+
+        if target_org_id and ns.collection:
+            col_org = str(self.resolve_collection_by_name(ns.collection).get("organizationId") or "")
+            if col_org and col_org != str(target_org_id):
+                raise VwcliError(
+                    f"Vault '{ns.vault or ns.organization_id}' (org {target_org_id}) "
+                    f"and collection '{ns.collection}' (org {col_org}) are in different organizations"
+                )
 
         if ns.dry_run:
             print(json.dumps(item_json, indent=2))
             return
+
+        # Vaultwarden >= 1.37.4 rejects org-cipher creation via POST /ciphers
+        # ("Invalid key cipher": it validates encryptedByKeyId against the
+        # user key, but org items are encrypted with the org key). Create the
+        # item in the personal vault first, then share it into the org - the
+        # share endpoint is exempt from that check.
+        if target_org_id:
+            item_json.pop("organizationId", None)
 
         created_json = self.bw_create_item(item_json)
         item_id = created_json.get("id")
@@ -1040,6 +1055,10 @@ class Client:
             self.assign_collection_to_item(str(item_id), ns.collection)
             self.bw_serve_sync()
             print(f"Assigned collection: {ns.collection}")
+        elif target_org_id:
+            self.bw_move_item_to_org(str(item_id), str(target_org_id), [])
+            self.bw_serve_sync()
+            print(f"Moved item into vault: {ns.vault or target_org_id}")
 
         if ns.to_ansible_vault:
             self.ansible_vault_encrypt(str(password or ""))
@@ -1057,40 +1076,56 @@ class Client:
         clone_payload = self.build_clone_payload(current_json)
         if ns.name:
             clone_payload["name"] = ns.name
-        if ns.organization_id:
-            clone_payload = self.set_organization_id(clone_payload, ns.organization_id)
-        if vault_org_id:
-            clone_payload = self.set_organization_id(clone_payload, vault_org_id)
 
-        target_org_id = str(vault_org_id or ns.organization_id or "")
         source_org_id = str(current_json.get("organizationId") or "")
-        if target_org_id and target_org_id != source_org_id:
+        target_org_id = str(vault_org_id or ns.organization_id or source_org_id)
+        move_collection_ids = [str(c) for c in (clone_payload.get("collectionIds") or []) if c]
+
+        if target_org_id != source_org_id:
             # Collection and folder IDs are scoped to a single vault, so
             # the source item's values are invalid for the target vault.
             # Rebuild the collection assignment for the target vault.
             clone_payload.pop("folderId", None)
-            if ns.collection:
-                col_json = self.resolve_collection_by_name(ns.collection)
-                col_id = col_json.get("id")
-                if not col_id:
-                    raise VwcliError(f"Collection '{ns.collection}' has no id; cannot assign.")
-                col_org = str(col_json.get("organizationId") or "")
-                if col_org and vault_org_id and col_org != str(vault_org_id):
-                    raise VwcliError(f"Vault '{ns.vault}' (org {vault_org_id}) and collection '{ns.collection}' (org {col_org}) are in different organizations")
-                if col_org:
-                    clone_payload = self.set_organization_id(clone_payload, col_org)
-                    target_org_id = col_org
-                clone_payload["collectionIds"] = [str(col_id)]
-            else:
-                clone_payload.pop("collectionIds", None)
+            move_collection_ids = []
+
+        if ns.collection:
+            col_json = self.resolve_collection_by_name(ns.collection)
+            col_id = col_json.get("id")
+            if not col_id:
+                raise VwcliError(f"Collection '{ns.collection}' has no id; cannot assign.")
+            col_org = str(col_json.get("organizationId") or "")
+            if col_org and target_org_id and col_org != target_org_id:
+                raise VwcliError(
+                    f"Vault '{ns.vault or ns.organization_id or target_org_id}' (org {target_org_id}) "
+                    f"and collection '{ns.collection}' (org {col_org}) are in different organizations"
+                )
+            if col_org:
+                target_org_id = col_org
+            move_collection_ids = [str(col_id)]
+
+        # Vaultwarden >= 1.37.4 rejects org-cipher creation via POST /ciphers
+        # ("Invalid key cipher": it validates encryptedByKeyId against the
+        # user key, but org items are encrypted with the org key). Create the
+        # clone as a personal item, then share it into the target vault -
+        # the share endpoint is exempt from that check.
+        clone_payload.pop("organizationId", None)
+        clone_payload.pop("collectionIds", None)
 
         if ns.dry_run:
+            if target_org_id:
+                clone_payload = self.set_organization_id(clone_payload, target_org_id)
+            if move_collection_ids:
+                clone_payload["collectionIds"] = move_collection_ids
             return "<clone-id>", clone_payload
 
         created_clone = self.bw_create_item(clone_payload)
         clone_id = created_clone.get("id")
         if not clone_id:
             raise VwcliError("Clone creation succeeded but clone ID was not returned")
+        if target_org_id:
+            self.bw_move_item_to_org(str(clone_id), target_org_id, move_collection_ids)
+            self.bw_serve_sync()
+            created_clone = self.bw_get_item(str(clone_id))
         source_id = current_json.get("id") or ""
         print(f"Cloned item [{source_id}] -> [{clone_id}]")
         return str(clone_id), created_clone

@@ -5,8 +5,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import constants
-
 
 def safe_chmod(path: Path, mode: int) -> None:
     with contextlib.suppress(OSError):
@@ -15,10 +13,14 @@ def safe_chmod(path: Path, mode: int) -> None:
 
 class Config:
     def __init__(self) -> None:
-        self.config_dir = constants.CONFIG_DIR
-        self.config_file = constants.CONFIG_FILE
-        self.cache_dir = constants.CACHE_DIR
-        self.collection_cache = constants.COLLECTION_CACHE
+        # Resolve paths at construction so HOME changes (e.g. in tests that
+        # monkeypatch it) take effect. Module-level constants bind the
+        # importing process's home directory at import time.
+        home = Path.home()
+        self.config_dir = home / ".config" / "vwcli"
+        self.config_file = self.config_dir / "config"
+        self.cache_dir = home / ".cache" / "vwcli"
+        self.collection_cache = self.cache_dir / "collections.json"
         self.ensure_dir()
 
     @staticmethod
