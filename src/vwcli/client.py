@@ -458,7 +458,13 @@ class Client:
                 response = self.bw_serve_request_json("GET", f"/list/object/items?search={encoded_search}")
                 data = response.get("data", {}).get("data")
                 if self.bw_serve_response_success(response) and isinstance(data, list):
-                    return self._verify_items(data) if verify else self._exclude_trash(data)
+                    if data:
+                        return self._verify_items(data) if verify else self._exclude_trash(data)
+                    # serve propagates newly written ciphers into its search
+                    # view asynchronously; an empty result may be stale, so
+                    # double-check against the CLI's data store.
+                    cli_items = self._bw_run_json_list(["list", "items", "--search", search])
+                    return self._exclude_trash(cli_items)
             except VwcliError:
                 pass
             print(
