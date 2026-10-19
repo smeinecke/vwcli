@@ -1,9 +1,17 @@
 # Makefile for vwcli
 
-.PHONY: all format reformat-ruff check fix-ruff fix test test-cov integration-test integration-test-all vulture xenon bandit pyright validate
+.PHONY: all install format reformat-ruff check fix-ruff fix test test-cov integration-test integration-test-all vulture xenon bandit pyright validate
 
 # Default target: run validation and tests
 all: validate test
+
+# Install vwcli as a uv tool and the bw serve systemd user service (the
+# installer also sets up nvm + @bitwarden/cli when missing). Optional
+# installer flags go through INSTALL_ARGS, e.g.
+#   make install INSTALL_ARGS=--install-backup
+install:
+	uv tool install --reinstall .
+	./bitwarden-serve/install-bitwarden-cli-user-service.sh $(INSTALL_ARGS)
 
 # Format the code using ruff
 format:

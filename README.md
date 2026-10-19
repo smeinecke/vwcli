@@ -54,7 +54,11 @@ Optional:
 ## Install
 
 ```bash
-# From the repo, into ~/.local/bin via uv:
+# Full setup: vwcli as a uv tool plus the bw serve systemd user service
+# (installs nvm + @bitwarden/cli if missing):
+make install
+
+# vwcli only, into ~/.local/bin via uv:
 uv tool install .
 
 # Or run without installing:

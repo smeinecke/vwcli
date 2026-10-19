@@ -817,9 +817,7 @@ class Client:
             try:
                 password = getpass.getpass("Master password: ")
             except (EOFError, KeyboardInterrupt) as exc:
-                raise VwcliError(
-                    "bw unlock needs the master password; set BW_PASSWORD or run interactively"
-                ) from exc
+                raise VwcliError("bw unlock needs the master password; set BW_PASSWORD or run interactively") from exc
 
         env_key = "VWCLI_BW_PASSWORD"
         os.environ[env_key] = password
