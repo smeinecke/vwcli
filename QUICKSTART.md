@@ -16,7 +16,10 @@ nvm install --lts
 nvm alias default 'lts/*'
 npm install -g @bitwarden/cli
 
-# Option B: any other install method, as long as `bw` is in PATH
+# Option B: any other install method, as long as `bw` is in PATH.
+# On macOS the easiest way is Homebrew:
+brew install bitwarden-cli
+
 bw --version
 ```
 
@@ -33,11 +36,16 @@ bw config server https://vault.example.com
 
 ```bash
 cd vwcli
+make install               # tool + shell completions + user service
+# or just the tool:
 uv tool install .          # or: uv sync && uv run vwcli help
 vwcli help
 ```
 
-## 4. Install the persistent bw serve service
+`make install` works on macOS too (it skips the Linux-only service units and
+still installs the `vw` alias and shell completions).
+
+## 4. Install the persistent bw serve service (Linux only)
 
 vwcli needs a running `bw serve` REST daemon to be usable - without one, every
 command pays seconds of Node.js startup for a throwaway instance. Install the

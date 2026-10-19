@@ -38,7 +38,7 @@ Bitwarden/Vaultwarden CLI wrapper - a convenience layer on top of the official
 - A running `bw serve` daemon. vwcli is built around it - without one, every
   command spawns a throwaway instance and pays seconds of Node.js startup.
   The `bitwarden-serve/` systemd user service is the supported setup
-  (socket-activated, hardened unit):
+  (socket-activated, hardened unit, **Linux only**):
 
   ```bash
   bitwarden-serve/install-bitwarden-cli-user-service.sh
@@ -73,6 +73,21 @@ uv run vwcli help
 (skipped per shell when not present). Completion covers subcommands and
 flags; `--collection`/`--from`/`--to` additionally complete collection names
 from the local cache.
+
+### macOS
+
+```bash
+brew install uv bitwarden-cli   # or install bw via nvm as on Linux
+make install
+```
+
+The systemd units are Linux-only and are skipped automatically; vwcli then
+spawns a `bw serve` per command (slower) or uses `BW_SERVE_URL` if you run
+one yourself. Completion installs work on macOS too: bash needs
+`brew install bash-completion@2` (plus the sourcing line Homebrew prints
+for `.bash_profile`), zsh (the default shell) gets `site-functions` plus a
+`compinit` snippet appended to `~/.zshrc`, fish uses
+`~/.config/fish/completions`.
 
 ## Quickstart
 

@@ -67,9 +67,9 @@ refresh-token idle timeout.
 For commands that support it, `bw_serve_url` is resolved in this order:
 
 1. **`BW_SERVE_URL` (env or config file)** - used when it answers `/status`.
-2. **systemd user service** - if `bitwarden-cli.service` is installed it is
-   started if needed and vwcli talks to it over the Unix socket
-   (`unix://$BW_SERVE_SOCKET`).
+2. **systemd user service** (Linux only) - if `bitwarden-cli.service` is
+   installed it is started if needed and vwcli talks to it over the Unix
+   socket (`unix://$BW_SERVE_SOCKET`).
 3. **Self-spawned daemon** - `bw serve --hostname 127.0.0.1 --port <free>`
    started for the duration of the command and terminated on exit. This is a
    compatibility fallback for one-off/CI use, not a daily-driver mode: the
