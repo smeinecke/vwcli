@@ -42,14 +42,16 @@ uv tool install .          # or: uv sync && uv run vwcli help
 vwcli help
 ```
 
-`make install` works on macOS too (it skips the Linux-only service units and
-still installs the `vw` alias and shell completions).
+`make install` works on macOS too - it installs the launchd LaunchAgent
+instead of the systemd units, plus the `vw` alias and shell completions.
 
-## 4. Install the persistent bw serve service (Linux only)
+## 4. Install the persistent bw serve service
 
 vwcli needs a running `bw serve` REST daemon to be usable - without one, every
-command pays seconds of Node.js startup for a throwaway instance. Install the
-systemd user service (Unix socket, hardened unit, socket-activated):
+command pays seconds of Node.js startup for a throwaway instance.
+
+On Linux, install the systemd user service (Unix socket, hardened unit,
+socket-activated):
 
 ```bash
 cd bitwarden-serve
@@ -58,6 +60,16 @@ cd bitwarden-serve
 ```
 
 Details: [docs/bitwarden-serve.md](docs/bitwarden-serve.md).
+
+On macOS, install the launchd LaunchAgent (Unix socket, starts at login,
+restarts on crash/network changes):
+
+```bash
+cd bitwarden-serve-macos
+./install-bitwarden-serve.sh
+```
+
+Details: [docs/bitwarden-serve-macos.md](docs/bitwarden-serve-macos.md).
 
 ## 5. Log in
 

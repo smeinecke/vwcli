@@ -51,11 +51,12 @@ Requests support both transports transparently:
 [configuration.md](configuration.md#how-bw-serve-is-selected)):
 
 1. configured `BW_SERVE_URL` that answers `/status`
-2. the `bitwarden-cli.service` systemd user unit over its Unix socket
+2. the installed service over its Unix socket - `bitwarden-cli.service`
+   (systemd, Linux) or `com.vwcli.bitwarden-serve` (launchd, macOS)
 3. a self-spawned `bw serve` on a free `127.0.0.1` port, SIGTERMed via
    `atexit`/`stop_bw_serve` - a slow compatibility fallback (seconds of
    startup per command) meant for one-off/CI use; vwcli warns and points at
-   the `bitwarden-serve/` systemd installer
+   the platform's service installer
 
 A managed (self-spawned) daemon gets its log in a temp file that is cleaned
 up on exit. After every mutating command vwcli POSTs `/sync`
@@ -123,9 +124,15 @@ are vault-scoped.
 `encrypt_string` spelling too for older versions) and prints the encrypted
 block. On `search` it applies to the first matched item only.
 
-## bitwarden-serve/
+## bitwarden-serve/ and bitwarden-serve-macos/
 
 Shell/systemd assets for a persistent local `bw serve` daemon: systemd socket
-activation on `/run/user/<uid>/bw.sock`, a Node `--require` patch that moves
-`bw serve` onto the inherited fd, optional encrypted-export timer, and a
-NetworkManager VPN hook. See [bitwarden-serve.md](bitwarden-serve.md).
+activation on `/run/user/<uid>/bw.sock` (bw's native `fd+listening://3` mode
+on the inherited fd), optional encrypted-export timer, and a NetworkManager
+VPN hook. See [bitwarden-serve.md](bitwarden-serve.md).
+
+`bitwarden-serve-macos/` is the launchd equivalent: a LaunchAgent running
+`bw serve --hostname unix://<sock>` on `~/Library/Application Support/vwcli/
+bw.sock`, an env file at `~/.config/vwcli/bw-serve.env`, and the same
+service-ops surface in `client.py` (`launchctl print`/`bootstrap`/`kickstart`
+in place of `systemctl`). See [bitwarden-serve-macos.md](bitwarden-serve-macos.md).

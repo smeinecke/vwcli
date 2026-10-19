@@ -32,7 +32,8 @@ runs `make integration-test` on PRs (`.github/workflows/`).
 - Use `-` instead of em dashes in comments and docs.
 - `uv.lock` is committed - update it via `uv`, not by hand.
 - Docs: `README.md`, `QUICKSTART.md`, `AGENTS.md` at root; everything else in
-  `docs/` (including `docs/bitwarden-serve.md`, moved out of `bitwarden-serve/`).
+  `docs/` (including `docs/bitwarden-serve.md` and `docs/bitwarden-serve-macos.md`,
+  moved out of the corresponding `bitwarden-serve*/` asset dirs).
 
 ## Gotchas
 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Installed to ~/Library/LaunchAgents/com.vwcli.bitwarden-serve.plist by
+  install-bitwarden-serve.sh, which substitutes __START_SCRIPT__ and
+  __LOG_DIR__ with absolute paths.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.vwcli.bitwarden-serve</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__START_SCRIPT__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Relaunch on crash and when network state changes (e.g. VPN up);
+             a clean exit (server unreachable) stays down until then. -->
+        <key>Crashed</key>
+        <true/>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>NetworkState</key>
+        <true/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/bitwarden-serve.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/bitwarden-serve.err.log</string>
+</dict>
+</plist>

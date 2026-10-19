@@ -54,10 +54,10 @@ Optional:
 ## Install
 
 ```bash
-# Full setup: vwcli as a uv tool, shell completions (bash/zsh/fish,
-# Linux + macOS) plus the bw serve systemd user service (Linux only;
-# installs nvm + @bitwarden/cli if missing). Installs both `vwcli` and the
-# `vw` alias:
+# Full setup: vwcli as a uv tool, shell completions (bash/zsh/fish) plus
+# the persistent bw serve service - systemd user unit on Linux, launchd
+# LaunchAgent on macOS (installs bw itself if missing). Installs both
+# `vwcli` and the `vw` alias:
 make install
 
 # vwcli only, into ~/.local/bin via uv:
@@ -81,13 +81,17 @@ brew install uv bitwarden-cli   # or install bw via nvm as on Linux
 make install
 ```
 
-The systemd units are Linux-only and are skipped automatically; vwcli then
-spawns a `bw serve` per command (slower) or uses `BW_SERVE_URL` if you run
-one yourself. Completion installs work on macOS too: bash needs
-`brew install bash-completion@2` (plus the sourcing line Homebrew prints
-for `.bash_profile`), zsh (the default shell) gets `site-functions` plus a
-`compinit` snippet appended to `~/.zshrc`, fish uses
-`~/.config/fish/completions`.
+The systemd units are Linux-only; on macOS `make install` installs a
+launchd LaunchAgent instead (`bitwarden-serve-macos/`) - same persistent
+`bw serve` daemon on a user-private unix socket, started at login and
+restarted on crash/network changes. See
+[docs/bitwarden-serve-macos.md](docs/bitwarden-serve-macos.md). Without a
+daemon, vwcli spawns a `bw serve` per command (slower) or uses
+`BW_SERVE_URL` if you run one yourself. Completion installs work on macOS
+too: bash needs `brew install bash-completion@2` (plus the sourcing line
+Homebrew prints for `.bash_profile`), zsh (the default shell) gets
+`site-functions` plus a `compinit` snippet appended to `~/.zshrc`, fish
+uses `~/.config/fish/completions`.
 
 ## Quickstart
 
@@ -107,7 +111,7 @@ See [QUICKSTART.md](QUICKSTART.md) for a guided tour and
 
 | Command | Purpose |
 |---------|---------|
-| `vwcli login` | Unlock vault; cache `BW_SESSION` and propagate it to the systemd env file |
+| `vwcli login` | Unlock vault; cache `BW_SESSION` and propagate it to the service env file |
 | `vwcli search <query>` | Search items (default command - `vwcli github` works too); `--json`, `--limit`, `--uri`, `--to-ansible-vault` |
 | `vwcli create` | Create a login item; `--name`, `--username`, `--password`/`--generate-password`, `--notes`, `--uri`, `--vault`, `--collection`, `--organization-id`, `--dry-run` |
 | `vwcli update` | Update an item selected by `--id` or `--search`; same field flags as create plus `--add-uri`/`--remove-uri`, `--clone`, `--dry-run` |

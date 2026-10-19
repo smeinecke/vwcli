@@ -190,11 +190,24 @@ class Client:
 
         os.environ["BW_SESSION"] = self.bw_session
 
+    @staticmethod
+    def _is_macos() -> bool:
+        return sys.platform == "darwin"
+
     def _service_socket_url(self) -> str:
-        sock = os.environ.get("BW_SERVE_SOCKET", f"/run/user/{os.getuid()}/bw.sock")
+        sock = os.environ.get("BW_SERVE_SOCKET")
+        if not sock:
+            sock = str(Path.home() / "Library" / "Application Support" / "vwcli" / "bw.sock") if self._is_macos() else f"/run/user/{os.getuid()}/bw.sock"
         return f"unix://{sock}"
 
     def _service_is_active(self) -> bool:
+        if self._is_macos():
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/com.vwcli.bitwarden-serve"],
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode == 0 and "state = running" in result.stdout
         result = subprocess.run(
             ["systemctl", "--user", "is-active", "bitwarden-cli.service"],
             capture_output=True,
@@ -202,6 +215,15 @@ class Client:
         return result.returncode == 0
 
     def _service_start(self) -> bool:
+        if self._is_macos():
+            uid = os.getuid()
+            plist = Path.home() / "Library" / "LaunchAgents" / "com.vwcli.bitwarden-serve.plist"
+            subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], capture_output=True)
+            result = subprocess.run(
+                ["launchctl", "kickstart", f"gui/{uid}/com.vwcli.bitwarden-serve"],
+                capture_output=True,
+            )
+            return result.returncode == 0
         result = subprocess.run(
             ["systemctl", "--user", "start", "bitwarden-cli.service"],
             capture_output=True,
@@ -216,30 +238,34 @@ class Client:
             time.sleep(0.1)
         return False
 
-    def _maybe_use_systemd_service(self) -> bool:
+    def _service_display_name(self) -> str:
+        return "com.vwcli.bitwarden-serve" if self._is_macos() else "bitwarden-cli.service"
+
+    def _maybe_use_service(self) -> bool:
         if not self._service_is_installed():
             return False
 
+        name = self._service_display_name()
         if not self._service_is_active():
             print(
-                "[info] bitwarden-cli.service is installed but not active; starting...",
+                f"[info] {name} is installed but not active; starting...",
                 file=sys.stderr,
             )
             if not self._service_start():
-                print("[warn] Failed to start bitwarden-cli.service", file=sys.stderr)
+                print(f"[warn] Failed to start {name}", file=sys.stderr)
                 return False
         else:
-            print("[info] bitwarden-cli.service is already active", file=sys.stderr)
+            print(f"[info] {name} is already active", file=sys.stderr)
 
         self.bw_serve_url = self._service_socket_url()
         self.bw_serve_managed = False
 
         if self._wait_for_bw_serve(10.0):
-            print("[info] bitwarden-cli.service is ready", file=sys.stderr)
+            print(f"[info] {name} is ready", file=sys.stderr)
             return True
 
         print(
-            "[warn] bitwarden-cli.service did not become ready within 10s",
+            f"[warn] {name} did not become ready within 10s",
             file=sys.stderr,
         )
         self.bw_serve_url = ""
@@ -251,21 +277,21 @@ class Client:
                 self.bw_serve_managed = False
                 return
             print(
-                "[info] Configured BW_SERVE_URL is not reachable; checking bitwarden-cli.service...",
+                f"[info] Configured BW_SERVE_URL is not reachable; checking {self._service_display_name()}...",
                 file=sys.stderr,
             )
-            if self._maybe_use_systemd_service():
+            if self._maybe_use_service():
                 return
             self.bw_serve_url = ""
 
-        if self._maybe_use_systemd_service():
+        if self._maybe_use_service():
             return
 
+        installer = "bitwarden-serve-macos/install-bitwarden-serve.sh" if self._is_macos() else "bitwarden-serve/install-bitwarden-cli-user-service.sh"
         print(
             "[warn] No persistent bw serve found; spawning a temporary instance. "
-            "This adds seconds of startup to every command - install the systemd "
-            "user service for regular use: "
-            "bitwarden-serve/install-bitwarden-cli-user-service.sh",
+            "This adds seconds of startup to every command - install the "
+            f"persistent service for regular use: {installer}",
             file=sys.stderr,
         )
         self.ensure_session()
@@ -697,11 +723,15 @@ class Client:
 
     @staticmethod
     def _service_env_file() -> Path:
-        xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-        return Path(xdg) / "systemd" / "user" / "bitwarden-cli.env"
+        xdg = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        if Client._is_macos():
+            return xdg / "vwcli" / "bw-serve.env"
+        return xdg / "systemd" / "user" / "bitwarden-cli.env"
 
     @staticmethod
     def _service_is_installed() -> bool:
+        if Client._is_macos():
+            return (Path.home() / "Library" / "LaunchAgents" / "com.vwcli.bitwarden-serve.plist").exists()
         result = subprocess.run(
             ["systemctl", "--user", "cat", "bitwarden-cli.service"],
             capture_output=True,
@@ -710,10 +740,19 @@ class Client:
 
     @staticmethod
     def _service_restart() -> None:
-        subprocess.run(["systemctl", "--user", "restart", "bitwarden-cli.service"], check=False)
+        if Client._is_macos():
+            uid = os.getuid()
+            label = f"gui/{uid}/com.vwcli.bitwarden-serve"
+            # kickstart -k fails on an unloaded agent - bootstrap it first
+            if subprocess.run(["launchctl", "print", label], capture_output=True).returncode != 0:
+                plist = Path.home() / "Library" / "LaunchAgents" / "com.vwcli.bitwarden-serve.plist"
+                subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=False)
+            subprocess.run(["launchctl", "kickstart", "-k", label], check=False)
+        else:
+            subprocess.run(["systemctl", "--user", "restart", "bitwarden-cli.service"], check=False)
 
     def _update_service_env(self, session: str, expires: int) -> bool:
-        """Update BW_SESSION (and BW_SESSION_EXPIRES) in the systemd env file.
+        """Update BW_SESSION (and BW_SESSION_EXPIRES) in the service env file.
 
         Returns True if the file was written.
         """
@@ -760,7 +799,7 @@ class Client:
             if updated and restart_service:
                 self._service_restart()
                 if not quiet:
-                    print("bitwarden-cli.service restarted with new token")
+                    print(f"{self._service_display_name()} restarted with new token")
 
     def _session_is_expired(self) -> bool:
         if not self.bw_session_expires:

@@ -6,7 +6,8 @@
 |------|------|----------|
 | `~/.config/vwcli/config` | `0600` | `KEY=value` lines: `BW_SESSION`, `BW_SESSION_EXPIRES`, `BW_SERVE_URL` |
 | `~/.cache/vwcli/collections.json` | - | Collection cache written by `vwcli collections cache` |
-| `~/.config/systemd/user/bitwarden-cli.env` | `0600` | Env file for the `bitwarden-serve` systemd unit (created by its installer, updated by `vwcli login`) |
+| `~/.config/systemd/user/bitwarden-cli.env` | `0600` | Env file for the systemd unit (Linux, created by its installer, updated by `vwcli login`) |
+| `~/.config/vwcli/bw-serve.env` | `0600` | Env file for the launchd agent (macOS, created by its installer, updated by `vwcli login`) |
 
 All files are created on demand; the config dir/file are chmod `0700`/`0600`.
 
@@ -35,13 +36,13 @@ path (`Parent/Child/Leaf`) computed from `parentId` chains. Rebuild with
 | `BW_SESSION` | - | Session token (also read from the config file) |
 | `BW_PASSWORD` | - | Master password env for `bw unlock --passwordenv` during `vwcli login` |
 | `BW_SERVE_URL` | - | Preferred `bw serve` endpoint (`http://...` or `unix:///path.sock`) |
-| `BW_SERVE_SOCKET` | `/run/user/<uid>/bw.sock` | Socket path used when connecting via the systemd service |
+| `BW_SERVE_SOCKET` | `/run/user/<uid>/bw.sock` (Linux), `~/Library/Application Support/vwcli/bw.sock` (macOS) | Socket path used when connecting via the installed service |
 | `BW_SERVE_HOST` | `127.0.0.1` | Bind host for a self-spawned `bw serve` |
 | `BW_SERVE_STARTUP_RETRIES` | `40` | Readiness poll count for a self-spawned `bw serve` |
 | `BW_SERVE_STARTUP_DELAY` | `0.1` | Seconds between readiness polls |
 | `BW_SESSION_TTL_SECONDS` | `2505600` (29 days) | Assumed session lifetime when stamping `BW_SESSION_EXPIRES` |
 | `NVM_DIR` | `~/.nvm` | Location of nvm for the `bw` fallback (`nvm exec --lts -- bw`) |
-| `XDG_CONFIG_HOME` | `~/.config` | Base dir for the systemd env file lookup |
+| `XDG_CONFIG_HOME` | `~/.config` | Base dir for the service env file lookup |
 
 ## Session lifecycle
 
@@ -49,9 +50,10 @@ path (`Parent/Child/Leaf`) computed from `parentId` chains. Rebuild with
 
 1. Stamps `BW_SESSION` + `BW_SESSION_EXPIRES` (now + `BW_SESSION_TTL_SECONDS`)
    into `~/.config/vwcli/config`.
-2. If `bitwarden-cli.service` is installed, updates
-   `~/.config/systemd/user/bitwarden-cli.env` and restarts the service so the
-   daemon picks up the new token.
+2. If the persistent service is installed, updates its env file
+   (`~/.config/systemd/user/bitwarden-cli.env` on Linux,
+   `~/.config/vwcli/bw-serve.env` on macOS) and restarts it so the daemon
+   picks up the new token.
 
 Before every vault operation, `ensure_session` checks the cached expiry. When
 expired it attempts a silent `bw unlock --raw` with stdin on `/dev/null`
@@ -67,14 +69,15 @@ refresh-token idle timeout.
 For commands that support it, `bw_serve_url` is resolved in this order:
 
 1. **`BW_SERVE_URL` (env or config file)** - used when it answers `/status`.
-2. **systemd user service** (Linux only) - if `bitwarden-cli.service` is
-   installed it is started if needed and vwcli talks to it over the Unix
+2. **Installed service** - the systemd user unit `bitwarden-cli.service`
+   on Linux or the launchd agent `com.vwcli.bitwarden-serve` on macOS; if
+   installed it is started when needed and vwcli talks to it over the Unix
    socket (`unix://$BW_SERVE_SOCKET`).
 3. **Self-spawned daemon** - `bw serve --hostname 127.0.0.1 --port <free>`
    started for the duration of the command and terminated on exit. This is a
    compatibility fallback for one-off/CI use, not a daily-driver mode: the
    startup cost makes interactive use painfully slow, so vwcli warns and
-   points at the `bitwarden-serve/` installer instead.
+   points at the platform's service installer instead.
 
 If no `bw` binary is in `PATH`, vwcli runs it through nvm
 (`nvm exec --silent --lts -- bw`); if nvm is missing too, commands fail with
