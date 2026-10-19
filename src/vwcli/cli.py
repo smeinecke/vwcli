@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
+import os
 import sys
 from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import argcomplete
 
 from .client import Client
 from .exceptions import VwcliError
@@ -21,6 +27,18 @@ KNOWN_COMMANDS = frozenset({
     "collections",
     "cache-collections",
 })
+
+
+def _collection_name_completer(prefix: str, parsed_args: argparse.Namespace, **kwargs: Any) -> list[str]:
+    """Complete collection names from the local cache - offline, no bw call."""
+    cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "vwcli" / "collections.json"
+    try:
+        items = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    return [str(i["name"]) for i in items if i.get("name")]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
             default="",
             metavar="VALUE",
             help="Collection name (resolved via cache; must be unique)",
-        )
+        ).completer = _collection_name_completer
         p.add_argument(
             "--vault",
             default="",
@@ -142,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="VALUE",
         help="Collection name (resolved via cache; must be unique)",
-    )
+    ).completer = _collection_name_completer
     p_create.add_argument(
         "--vault",
         default="",
@@ -216,14 +234,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="COLLECTION",
         help="Source collection name",
-    )
+    ).completer = _collection_name_completer
     p_move.add_argument(
         "--to",
         dest="to_collection",
         required=True,
         metavar="COLLECTION",
         help="Target collection name",
-    )
+    ).completer = _collection_name_completer
     p_move.add_argument(
         "--search",
         default="",
@@ -388,6 +406,7 @@ def run(client: Client, argv: list[str]) -> int:
         args = ["collections", "cache", *args[1:]]
 
     parser = build_parser()
+    argcomplete.autocomplete(parser)
     ns = parser.parse_args(args)
 
     if not ns.command or ns.command == "help":

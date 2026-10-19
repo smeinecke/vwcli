@@ -54,8 +54,10 @@ Optional:
 ## Install
 
 ```bash
-# Full setup: vwcli as a uv tool plus the bw serve systemd user service
-# (installs nvm + @bitwarden/cli if missing):
+# Full setup: vwcli as a uv tool, shell completions (bash/zsh/fish,
+# Linux + macOS) plus the bw serve systemd user service (Linux only;
+# installs nvm + @bitwarden/cli if missing). Installs both `vwcli` and the
+# `vw` alias:
 make install
 
 # vwcli only, into ~/.local/bin via uv:
@@ -65,6 +67,12 @@ uv tool install .
 uv sync
 uv run vwcli help
 ```
+
+`make install` also registers shell completion for both binaries: bash via
+`bash-completion`, zsh via `site-functions`, fish via `fish/completions`
+(skipped per shell when not present). Completion covers subcommands and
+flags; `--collection`/`--from`/`--to` additionally complete collection names
+from the local cache.
 
 ## Quickstart
 

@@ -7,10 +7,12 @@ requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = [
     "rich>=13.0.0",
+    "argcomplete>=3.5",
 ]
 
 [project.scripts]
 vwcli = "vwcli.cli:main"
+vw = "vwcli.cli:main"
 
 [dependency-groups]
 dev = [
