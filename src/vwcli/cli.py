@@ -31,6 +31,7 @@ KNOWN_COMMANDS = frozenset({
 
 def _collection_name_completer(prefix: str, parsed_args: argparse.Namespace, **kwargs: Any) -> list[str]:
     """Complete collection names from the local cache - offline, no bw call."""
+    del prefix, parsed_args, kwargs  # signature is fixed: argcomplete calls completers by keyword
     cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "vwcli" / "collections.json"
     try:
         items = json.loads(cache.read_text(encoding="utf-8"))
