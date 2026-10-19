@@ -29,6 +29,11 @@ KNOWN_COMMANDS = frozenset({
 })
 
 
+def _set_completer(action: argparse.Action, completer: Callable[..., list[str]]) -> None:
+    # argparse.Action does not declare "completer"; argcomplete reads it dynamically.
+    setattr(action, "completer", completer)
+
+
 def _collection_name_completer(prefix: str, parsed_args: argparse.Namespace, **kwargs: Any) -> list[str]:
     """Complete collection names from the local cache - offline, no bw call."""
     del prefix, parsed_args, kwargs  # signature is fixed: argcomplete calls completers by keyword
@@ -88,12 +93,15 @@ def build_parser() -> argparse.ArgumentParser:
             metavar="URL",
             help="Remove a URI from the existing list by exact URL",
         )
-        p.add_argument(
-            "--collection",
-            default="",
-            metavar="VALUE",
-            help="Collection name (resolved via cache; must be unique)",
-        ).completer = _collection_name_completer
+        _set_completer(
+            p.add_argument(
+                "--collection",
+                default="",
+                metavar="VALUE",
+                help="Collection name (resolved via cache; must be unique)",
+            ),
+            _collection_name_completer,
+        )
         p.add_argument(
             "--vault",
             default="",
@@ -156,12 +164,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="URL[::MATCH]",
         help="URI for autofill; append ::MATCH_TYPE to set match (default, base_domain, host, starts_with, exact, regexp, never)",
     )
-    p_create.add_argument(
-        "--collection",
-        default="",
-        metavar="VALUE",
-        help="Collection name (resolved via cache; must be unique)",
-    ).completer = _collection_name_completer
+    _set_completer(
+        p_create.add_argument(
+            "--collection",
+            default="",
+            metavar="VALUE",
+            help="Collection name (resolved via cache; must be unique)",
+        ),
+        _collection_name_completer,
+    )
     p_create.add_argument(
         "--vault",
         default="",
@@ -229,20 +240,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
     p_move = sub.add_parser("move", help="Bulk move items from one collection to another")
-    p_move.add_argument(
-        "--from",
-        dest="from_collection",
-        required=True,
-        metavar="COLLECTION",
-        help="Source collection name",
-    ).completer = _collection_name_completer
-    p_move.add_argument(
-        "--to",
-        dest="to_collection",
-        required=True,
-        metavar="COLLECTION",
-        help="Target collection name",
-    ).completer = _collection_name_completer
+    _set_completer(
+        p_move.add_argument(
+            "--from",
+            dest="from_collection",
+            required=True,
+            metavar="COLLECTION",
+            help="Source collection name",
+        ),
+        _collection_name_completer,
+    )
+    _set_completer(
+        p_move.add_argument(
+            "--to",
+            dest="to_collection",
+            required=True,
+            metavar="COLLECTION",
+            help="Target collection name",
+        ),
+        _collection_name_completer,
+    )
     p_move.add_argument(
         "--search",
         default="",
